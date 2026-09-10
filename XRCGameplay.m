@@ -1,7 +1,8 @@
-// XRCGameplay.m — gp.update hook + 谱面钟 retime + seek（含 replay/循环）。
+// XRCGameplay.m — gp.update hook + 谱面钟 retime + seek（含循环）。
 // seek 平移 = 音频 seek + 谱面钟 base 平移（判定比较 |note - (cur - base)|，
-// 所以 base -= (cur - target) 即整体平移）。转场直调路线已废弃（UAF），
-// XRC_HAS_TRANSITION 保持 0，仅保留编译分支与探针。
+// 所以 base -= (cur - target) 即整体平移）。
+// 循环/重打/换歌的玩法语义与三次程序化-retry 失败史见文件尾部
+// 「循环 / 自动重建」区块的注释。
 
 #import <Foundation/Foundation.h>
 #import "AccCommon.h"    // acc_flog
@@ -93,19 +94,6 @@ void xrc_gameplay_set_resume_ms(uint32_t ms) {
     acc_flog(@"retry watch armed: %u ms", ms);
 }
 uint32_t xrc_gameplay_get_resume_ms(void) { return atomic_load(&s_capture_ms); }
-
-// ---- 自动重建状态机（到 B → 冻结 → triggerAction(retry) → 新场景 seek 回 A）----
-// 语义依据：retry = 游戏自身"销毁旧场景→完整重建"链路（replay-chain §11），
-// 重建后音频/判定天然从头；配合 + 我们注入 seek 到 A = 真正的循环练习。
-// 失败降级链：triggerAction 无效（无暂停态前置？）→ 2s 超时 → 解冻 + 日志，
-// 用户手动 retry 仍能回 A（音频回跳检测）。
-#define XRC_AR_STATE_IDLE     0
-#define XRC_AR_STATE_FREEZE   1   // 已冻结，等 N 帧再触发（对齐暂停态）
-#define XRC_AR_STATE_TRIGGER  2   // 已触发，等新场景出现
-static _Atomic(uint32_t) s_ar_state = XRC_AR_STATE_IDLE;
-static _Atomic(uint64_t) s_ar_stamp_us = 0;
-static _Atomic(uint64_t) s_ar_scene_before = 0;
-static _Atomic(uint32_t) s_ar_target_a = 0;
 
 // 帧内调用（note_group 有效时）：音频位置回跳检测。
 static void s_retry_watch_tick(void) {
@@ -316,8 +304,7 @@ void xrc_gameplay_update(void *self, uint64_t a2, uint64_t a3, uint64_t a4, uint
             } else if (s_stall_since && now_us - s_stall_since > 1500000ULL) {
                 uint32_t a = 0, b = 0;
                 xrc_loop_get_range(&a, &b);
-                if (xrc_loop_get_enabled() && pos < (int32_t)b - 200
-                    && atomic_load(&s_ar_state) == XRC_AR_STATE_IDLE) {
+                if (xrc_loop_get_enabled() && pos < (int32_t)b - 200) {
                     if (xrc_gameplay_request(XRC_OP_LOOP_REWIND, a))
                         acc_flog(@"loop stall at %d -> forced rewind to %u", pos, a);
                 }
@@ -386,64 +373,40 @@ void xrc_seek_ms(uint32_t ms) {
 #pragma mark - 循环 / 自动重建（玩法语义说明）
 
 /*
- * 玩法定义（2026-09-10 与用户闭合）：
+ * 玩法定义与实现定案（2026-09-10 v8.9.9）：
  *
  * 【A-B 循环练习】
  *   用户流程：播放到起点按「起点」→ 播放到终点按「终点」→ 开「循环」。
- *   到 B 点后：冻结时间域（对齐游戏暂停语义）→ 100ms 后程序化触发
- *   triggerAction(retry)（= 暂停菜单 Retry 的同一函数，完整重建场景）
- *   → 新场景首帧 seek 回 A → 解冻。判定计数/连击随重建自然归零。
- *   失败降级：2s 内未见新场景（trigger 无效）→ 解冻 + 日志，用户手动
- *   retry 仍会经音频回跳检测回到 A。
+ *   到 B 点 → deferred seek 平移回 A（音频 seek + 谱面钟 base 平移）。
+ *   语义：练习定位——已判音符不重现、计分不回滚（v8.9.5 实测稳定，不触
+ *   碰游戏状态机、无卡死风险）。
  *
- * 【退出重进 vs retry 的区别】
- *   换歌/退出重进 = 播放器实例更换（player 指针变化）→ xrc_loop_reset_all()
- *   清空练习状态。retry = 同一播放器、场景重建 → 状态保留，正好用于循环。
+ * 【完整重打（音符重现）】
+ *   用户暂停菜单自行 Retry（游戏原生重建链，安全），重建后音频回跳检测
+ *   随即把进度拉回 A（该链 v8.9.5/6 实测有效：retry detected -> seek A）。
  *
- * 【手动 retry 回位】
- *   循环开启时回 A 点；否则回「重开回起点」记录的目标（Reset on Retry）。
- *   检测依据 = 音频位置帧间回跳 > 10s（retry 重建的必然特征）。
+ * 【程序化 retry（已放弃，禁止复活）】
+ *   v8.9.6 直调 triggerAction(13) → 被静默忽略（Retry 回调首校验
+ *   PauseLayer+0x298==1，新层未置位）；v8.9.7 建暂停层+setup → 仍忽略；
+ *   v8.9.8 建层+置 0x298+triggerAction → 仍忽略，且 9 次尝试把 action
+ *   记录塞进 GameModel 队列，污染状态致手动 retry 卡死转场界面。
+ *   结论：retry 与暂停流程深度耦合，外部驱动需动内部状态，风险不可控。
+ *   研究记录见 research/notes/ios-7.0.255-replay-chain.md §11 与 DEVLOG。
+ *
+ * 【退出重进 vs retry】
+ *   换歌/退出重进 = 播放器实例更换或曲长归零（见面板 watcher 判据）→
+ *   xrc_loop_reset_all() 清空练习状态。retry = 同一播放器、场景重建 →
+ *   状态保留，正好用于续练。
  */
-
-// replay 定案（2026-09-10）：不再直调转场函数（sub_100CA9590 会读旧场景
-// note_group → UAF，已两次真机崩溃）。改为 seek 平移路线——音频 seek +
-// 谱面钟 base 平移（XRC_CLK_BASE_OFF）。已判 note 不重现、计分不回滚，
-// 属"练习定位"语义；循环 = 到 B 点后 deferred seek 回 A，往复。
-// XRC_HAS_TRANSITION 保留为 0（转场直调路线已废弃，槽 178 仅作探测）。
-
-typedef void (*transition_fn)(void *scene, int resume);
 
 static _Atomic(bool) s_loop_enabled = false;
 static _Atomic(uint32_t) s_loop_a = 0;
 static _Atomic(uint32_t) s_loop_b = 0;
 
-bool xrc_transition_resume(void *gameplay, bool resume) {
-#if XRC_HAS_TRANSITION
-    extern uint64_t xrc_image_base(void);
-    uint64_t base = xrc_image_base();
-    if (!base || !XRC_OFF_GP_VTABLE) return false;
-    void **vt = (void **)(base + XRC_OFF_GP_VTABLE);
-    void *fn_raw = vt[XRC_TRANSITION_VTABLE_SLOT];
-    if (!fn_raw) return false;
-#if __has_feature(ptrauth_calls)
-    void *fn = ptrauth_strip(fn_raw, ptrauth_key_asia);
-    void *signed_fn = ptrauth_sign_unauthenticated(fn, ptrauth_key_asia,
-                        ptrauth_blend_discriminator(&vt[XRC_TRANSITION_VTABLE_SLOT], 0));
-    ((transition_fn)signed_fn)(gameplay, resume ? 1 : 0);
-#else
-    ((transition_fn)fn_raw)(gameplay, resume ? 1 : 0);
-#endif
-    return true;
-#else
-    (void)gameplay; (void)resume;
-    return false;
-#endif
-}
-
 bool xrc_loop_get_enabled(void) { return atomic_load(&s_loop_enabled); }
 void xrc_loop_set_range(uint32_t a_ms, uint32_t b_ms) {
     // 2026-09-10 交互重构：设定区间**不再自动启用**（面板流程：设起点→设终点→开循环）。
-    // 区间合法性（b >= a+1000）在 tick 时检查。
+    // 区间合法性（b >= a+1000）在 tick 与 set_enabled 时检查。
     atomic_store(&s_loop_a, a_ms);
     atomic_store(&s_loop_b, b_ms);
 }
@@ -453,11 +416,9 @@ void xrc_loop_set_enabled(bool on) {
     atomic_store(&s_loop_enabled, on);
     acc_flog(@"loop %s (A=%u B=%u)", on ? "ON" : "OFF", a, b);
 }
-// 换歌（退出重进）→ 练习状态归零。retry 不改 player 指针，不会走到这里。
-// 换歌/退出重进 = 练习状态归零（用户定义：只要退出重进就视作换歌，哪怕进同一首）。
-// 触发链：Tweak.x 的 0.5s 轮询（player 指针变化）+ 面板 tick 的三信号联合判据
-// （指针 / 曲长归零 / 位置回跳——v8.9.6 真机教训：单靠指针会漏）。
-// retry 不走这里：retry 是同一播放器实例内的场景重建，状态必须保留才能续练。
+// 换歌/退出重进 = 练习状态归零（用户定义：只要退出重进就视作换歌，哪怕同一首）。
+// 触发链：Tweak.x 0.5s 轮询（player 指针变化）+ 面板 tick watcher（指针/曲长归零）。
+// retry 不走这里：同一播放器实例内的场景重建，状态必须保留才能续练。
 void xrc_loop_reset_all(void) {
     atomic_store(&s_loop_enabled, false);
     atomic_store(&s_loop_a, 0);
@@ -469,94 +430,19 @@ void xrc_loop_get_range(uint32_t *from_ms, uint32_t *to_ms) {
     if (from_ms) *from_ms = atomic_load(&s_loop_a);
     if (to_ms)   *to_ms   = atomic_load(&s_loop_b);
 }
-// 程序化 retry（v8.9.8 最终序列）
-// ─────────────────────────────────────────────────────────────
-// 真机日志（v8.9.7）证实的两个前提：
-//   1. Retry 点击回调 sub_100948694 首先校验 `PauseLayer+0x298 == 1`——
-//      该标志由 sub_100947DC0（"暂停已建立"流程）置位，未置位时整段点击
-//      逻辑直接返回（这就是 v8.9.6 直调 triggerAction(13) 被静默忽略的原因）。
-//   2. 触发必须发生在「暂停层存在」的上下文中。
-// 因此序列 = 工厂建 PauseLayer（delegate=当前场景, gm=全局单例, style=0）
-//   → 置 +0x298=1（模拟"暂停已建立"）→ triggerAction(gm, 13, 1, 0, 0)
-//   （= 用户点 Retry 序列第②步；此后游戏走自己的销毁-重建链）。
-// 重建完成后由状态机检测新场景指针 → seek 回 A → 解冻。
-// 失败降级：2s 未见新场景 → 解冻 + 日志（用户手动 retry 仍走音频回跳回位）。
-static void s_ar_trigger_retry(void) {
-    extern uint64_t xrc_image_base(void);
-    uint64_t base = xrc_image_base();
-    if (!base) return;
-    uint64_t locator = *(uint64_t *)(base + XRC_OFF_SERVICE_LOCATOR);
-    if (!locator) { acc_flog(@"auto-retry: service locator null"); return; }
-    uint64_t game_model = *(uint64_t *)(locator + 0x10);
-    if (!game_model) { acc_flog(@"auto-retry: game model null"); return; }
-    void *scene = (void *)atomic_load(&s_ar_scene_before);   // 当前活场景（= delegate）
-    if (!scene) { acc_flog(@"auto-retry: no scene"); return; }
-    // ① PauseLayer(delegate=scene, gameModel, style=0) —— 游戏自己的暂停层工厂
-    uint64_t (*pause_factory)(void *, uint64_t, int) =
-        (uint64_t (*)(void *, uint64_t, int))(base + XRC_OFF_PAUSE_FACTORY);
-    uint64_t pl = pause_factory(scene, game_model, 0);
-    if (!pl) { acc_flog(@"auto-retry: pause factory returned null"); return; }
-    // ② 置"暂停已建立"标志（PauseLayer+0x298，sub_100947DC0 同款写入），
-    //    解锁 Retry 回调内部的校验门。
-    *(volatile uint8_t *)(pl + 0x298) = 1;
-    // ③ triggerAction(gm, action=13 /retry/, 1, 0, 0) —— 用户点 Retry 序列第②步
-    void (*trigger)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) =
-        (void (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t))
-        (base + XRC_OFF_ACTION_TRIGGER);
-    trigger(game_model, XRC_ACTION_RETRY, 1, 0, 0);
-    acc_flog(@"auto-retry: pause-layer armed (pl=%p flag@%p) + triggerAction(13) sent",
-             (void *)pl, (void *)(pl + 0x298));
-}
-
 void xrc_loop_tick(void *gameplay, uint32_t pos_ms) {
-    uint32_t st = atomic_load(&s_ar_state);
-    uint64_t now = xrc_real_now_us();
-
-    if (st == XRC_AR_STATE_IDLE) {
-        if (!atomic_load(&s_loop_enabled)) return;
-        uint32_t b = atomic_load(&s_loop_b);
-        if (pos_ms >= b && b > atomic_load(&s_loop_a) + 1000) {
-            // 到 B：冻结（对齐游戏暂停语义）→ 延迟 100ms → 触发 retry
-            xrc_clock_freeze_inc();
-            atomic_store(&s_ar_target_a, atomic_load(&s_loop_a));
-            atomic_store(&s_ar_scene_before, (uint64_t)gameplay);
-            atomic_store(&s_ar_stamp_us, now);
-            atomic_store(&s_ar_state, XRC_AR_STATE_FREEZE);
-            acc_flog(@"loop auto-retry: freeze at %u (A=%u)", pos_ms,
-                     atomic_load(&s_loop_a));
-        }
-        return;
-    }
-
-    if (st == XRC_AR_STATE_FREEZE) {
-        if (now - atomic_load(&s_ar_stamp_us) < 100000ULL) return;
-        s_ar_trigger_retry();
-        atomic_store(&s_ar_stamp_us, now);
-        atomic_store(&s_ar_state, XRC_AR_STATE_TRIGGER);
-        return;
-    }
-
-    if (st == XRC_AR_STATE_TRIGGER) {
-        uint64_t before = atomic_load(&s_ar_scene_before);
-        if ((uint64_t)gameplay != before) {
-            // 新场景已出现：排队 seek 回 A（pending 绑定新场景，下一帧执行），解冻
-            uint32_t a = atomic_load(&s_ar_target_a);
-            xrc_clock_freeze_dec();
-            if (xrc_gameplay_request(XRC_OP_LOOP_REWIND, a))
-                acc_flog(@"loop auto-retry: new scene -> rewind to %u", a);
-            else
-                acc_flog(@"loop auto-retry: rewind request rejected (a=%u)", a);
-            atomic_store(&s_ar_state, XRC_AR_STATE_IDLE);
-            return;
-        }
-        if (now - atomic_load(&s_ar_stamp_us) > 2000000ULL) {
-            // 2s 超时：未出现新场景 → 解冻，退化为旧行为（等手动 retry）。
-            // v8.9.6 日志显示没有暂停层上下文时"复位"被静默忽略——若这版仍超时，
-            // 说明还需要真正的场景重建调用（下一步：步进 2 = delegate 全序列）。
-            xrc_clock_freeze_dec();
-            atomic_store(&s_ar_state, XRC_AR_STATE_IDLE);
-            acc_flog(@"loop auto-retry: TIMEOUT (setup ineffective) - unfroze");
-        }
+    if (!atomic_load(&s_loop_enabled)) return;
+    uint32_t a = atomic_load(&s_loop_a), b = atomic_load(&s_loop_b);
+    if (b <= a + 1000) return;
+    if (pos_ms >= b) {
+        if (xrc_gameplay_request(XRC_OP_LOOP_REWIND, a))
+            acc_flog(@"loop rewind at %u -> %u (seek shift)", pos_ms, a);
     }
 }
 
+// 转场直调（历史路线，XRC_HAS_TRANSITION=1 才编译；槽 178 是 this 调整 thunk，
+// 传 GameScene 指针会指针错位——当年 UAF 的一半根因，禁止启用）。
+bool xrc_transition_resume(void *gameplay, bool resume) {
+    (void)gameplay; (void)resume;
+    return false;
+}

@@ -337,7 +337,7 @@
 
     // ---- tips（拖拽=跳转；循环 = 设起点→设终点→开循环；到终点自动重建回起点）----
     UILabel *tips = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
-    tips.text = @"拖时间轴=跳转 ｜ 循环: 设起点→播放到终点→设终点→开循环(到终点自动重开回起点)";
+    tips.text = @"拖时间轴=跳转 ｜ 循环: 设起点→设终点→开循环(到终点回到起点; 要重打音符用游戏内 Retry)";
     tips.font = [UIFont systemFontOfSize:10];
     tips.textColor = [UIColor colorWithWhite:0.55 alpha:1.0];
     tips.adjustsFontSizeToFitWidth = YES;

@@ -86,8 +86,11 @@
 // 程序化 retry = 构造 PauseLayer(delegate=当前场景, gm=全局单例, style) →
 // sub_100947C20(pauseLayer) → 游戏自己的重建链。delegate 传场景经
 // vtable 槽 172（sub_100CA762C → sub_100CA7538）转场景自身（this-680）。
-#define XRC_OFF_PAUSE_FACTORY       (0xBACD34ULL)   // sub_100BACD34
-#define XRC_OFF_PAUSE_SETUP         (0x947C20ULL)   // sub_100947C20
+// ⚠ 已停用（2026-09-10 v8.9.9）：程序化 retry 三次尝试均失败且最后一次
+// 污染 action 队列致手动 retry 卡死（见 DEVLOG v8.9.6/7/8 与 replay 笔记 §11）。
+// 偏移保留仅作研究记录，代码不得再调用。
+#define XRC_OFF_PAUSE_FACTORY       (0xBACD34ULL)   // sub_100BACD34（停用）
+#define XRC_OFF_PAUSE_SETUP         (0x947C20ULL)   // sub_100947C20（停用）
 
 // note 字段（改判 handler 读；replay-chain 笔记 §3.2）
 #define XRC_NOTE_TYPE_OFF           28
