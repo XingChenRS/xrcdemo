@@ -1,7 +1,12 @@
 // xrc-arcdemo / Tweak.x — bootstrap + 悬浮 UI。
 // 游戏逻辑全部在 XRC* 模块；交互全部在 XRCPracticePanel（ArcCreate 同构）。
-#define XRC_TWEAK_VERSION  @"v8.1.0"
+#define XRC_TWEAK_VERSION  @"v8.6.0"
 #define XRC_BUILD_LABEL    @"Sideload"
+// 构建号：CI 通过 -DXRC_BUILD_STAMP=... 注入（commit sha + 时间）；
+// 本地构建回退为 "dev"。日志首行会打印它——用于确认实际装配的版本。
+#ifndef XRC_BUILD_STAMP
+#  define XRC_BUILD_STAMP "dev"
+#endif
 
 #import <substrate.h>
 #import <time.h>
@@ -169,7 +174,8 @@ void acc_flog(NSString *fmt, ...) {
 static void doBootstrap(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        acc_flog(@"==== xrc-arcdemo tweak %@ doBootstrap begin ====", XRC_TWEAK_VERSION);
+        acc_flog(@"==== xrc-arcdemo tweak %@ build %s doBootstrap begin ====",
+                 XRC_TWEAK_VERSION, XRC_BUILD_STAMP);
         uint64_t base = xrc_image_base();
         g_xrc = xrc_runtime_discover();
         @try { initButton(); }       @catch (NSException *e) { acc_flog(@"initButton EX: %@", e); }
