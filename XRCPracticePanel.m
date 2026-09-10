@@ -148,6 +148,7 @@
 @property (nonatomic, strong) UILabel *capsLabel;
 @property (nonatomic, strong) UILabel *judgeHdr;
 @property (nonatomic, strong) NSMutableArray<UITextField *> *judgeFields;
+@property (nonatomic, strong) UIButton *retryResumeBtn;
 @property (nonatomic, assign) CGFloat contentHeight;
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic, assign) uint32_t pendingFrom;   // 第一次点 From 的暂存（ArcCreate 语义：直接取当前）
@@ -337,6 +338,12 @@
     CGFloat rightBottom = y + 18 + 2 * (rowH + gap) - gap + 13;
     y = MAX(leftBottom, rightBottom) + blockGap;
 
+    // ---- reset-on-retry toggle（勾选后：游戏内 retry 自动跳回练习起点）----
+    self.retryResumeBtn = [self makeButton:@"Reset on Retry: OFF" action:@selector(toggleRetryResume)];
+    self.retryResumeBtn.frame = CGRectMake(x0, y, W, rowH);
+    [self addSubview:self.retryResumeBtn];
+    y += rowH + blockGap;
+
     self.capsLabel = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
     self.capsLabel.font = [UIFont systemFontOfSize:10];
     self.capsLabel.textColor = [UIColor colorWithWhite:0.7 alpha:1.0];
@@ -351,7 +358,7 @@
     self.timeline = nil; self.timeLabel = nil; self.speedLabel = nil;
     self.speedSlider = nil; self.fromBtn = nil; self.toBtn = nil;
     self.onOffBtn = nil; self.capsLabel = nil; self.judgeHdr = nil;
-    self.judgeFields = nil;
+    self.judgeFields = nil; self.retryResumeBtn = nil;
     [self buildIfNeeded];
 }
 
@@ -453,6 +460,12 @@
     [self.onOffBtn setTitle:loopOn ? @"Repeat ON" : @"Repeat OFF" forState:UIControlStateNormal];
     self.onOffBtn.backgroundColor = loopOn ? [UIColor colorWithRed:0.2 green:0.5 blue:0.9 alpha:1.0]
                                            : [UIColor colorWithWhite:0.25 alpha:1.0];
+    BOOL resumeArmed = (xrc_gameplay_get_resume_ms() != 0);
+    [self.retryResumeBtn setTitle:(resumeArmed ? @"Reset on Retry: ON" : @"Reset on Retry: OFF")
+                          forState:UIControlStateNormal];
+    self.retryResumeBtn.backgroundColor = resumeArmed
+        ? [UIColor colorWithRed:0.2 green:0.5 blue:0.9 alpha:1.0]
+        : [UIColor colorWithWhite:0.25 alpha:1.0];
     [self applyCapabilityGating];
 }
 
@@ -501,6 +514,19 @@
     xrc_loop_set_range(from, pos);
     [self refresh];
 }
+- (void)toggleRetryResume {
+    if (xrc_gameplay_get_resume_ms() != 0) {
+        xrc_gameplay_set_resume_ms(0);   // 解除
+    } else {
+        // 起点 = 循环 A（若已设）否则当前进度
+        uint32_t a = 0, b = 0;
+        xrc_loop_get_range(&a, &b);
+        uint32_t target = (b > a + 1000) ? a : xrc_player_position_ms();
+        xrc_gameplay_set_resume_ms(target);
+    }
+    [self refresh];
+}
+
 - (void)toggleRepeat {
     if (xrc_loop_get_enabled()) {
         xrc_loop_set_range(0, 0);

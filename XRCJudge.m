@@ -76,8 +76,10 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
             atomic_fetch_add(&s_stat_gated, 1);
             return 0;
         }
-        uint64_t f48 = rd64(vt + 0x30);            // vtable[48]：!(result & 1) → 提前 0
-        if (f48 && !(((xrc_fn1_t)f48)(note) & 1)) {
+        // 门2（vtable 槽 6）：TBZ W0,#0 → bit0==0 继续判定；bit0==1 → return 0。
+        // 2026-09-10 真机教训：此前误写为 !(值 & 1) → 所有可判音符被拒 → 整谱不判。
+        uint64_t f48 = rd64(vt + 0x30);
+        if (f48 && (((xrc_fn1_t)f48)(note) & 1)) {
             atomic_fetch_add(&s_stat_gated, 1);
             return 0;
         }
@@ -139,9 +141,10 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
         //                          + fx[1](fx, note, grade, dir); return 1
         uint64_t stats = rd64(ng + XRC_OFF_JUDGE_COMMIT_OBJ);
         uint64_t fx    = rd64(ng + XRC_OFF_JUDGE_FX_OBJ);
+        // commit 第 4 参：Pure 恒 0，Far/Lost 传 dir（照抄 10091e79c / e7e4 / e824）。
+        uint64_t a4 = (grade == 0) ? 0 : (uint64_t)(uint32_t)dir;
         if (s_commit && stats)
-            s_commit(stats, note, (uint64_t)(uint32_t)grade, (uint64_t)(uint32_t)dir,
-                     (uint64_t)ts, a6);
+            s_commit(stats, note, (uint64_t)(uint32_t)grade, a4, (uint64_t)ts, a6);
         if (fx) {
             uint64_t f1 = rd64(rd64(fx) + 8);   // vtable[1](fx, note, grade, dir)
             if (f1) ((xrc_fx1_t)f1)(fx, note, (uint64_t)(uint32_t)grade,
@@ -150,6 +153,9 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
         if (grade == 0)      atomic_fetch_add(&s_stat_pure, 1);
         else if (grade == 1) atomic_fetch_add(&s_stat_far, 1);
         else                 atomic_fetch_add(&s_stat_lost, 1);
+        if (n < 30)
+            acc_flog(@"[judge] #%u d=%d g=%d dir=%d th=%d/%d/%d/%d",
+                     n, delta, grade, dir, t_pure, t_far, t_lost, t_miss);
         return 1;
     }
 

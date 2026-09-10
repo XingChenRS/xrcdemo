@@ -2,6 +2,19 @@
 
 ArcDemo 演进记录。能力状态标记与 [xrc 能力账本](../../research/notes/xrc-arcaea-capability-ledger-2026-08-31.md) 对齐（XRC-R 运行中 / XRC-V 已验证 / XRC-S 静态闭环 / PROTO 失败原型 / OPEN 未闭合）。
 
+## 2026-09-10 — v8.9.4：判定全失效根因（门2 方向）+ retry 自动复位
+
+**判定整谱不判（唯一根因）**：handler 前置门 2（vtable 槽 6）方向写反。反汇编
+`10091e6c8 TBZ W0,#0 → 继续`（bit0==1 才 return 0，与门1 TBNZ 同向），实现写成了
+`!(值 & 1) → return 0` → 所有可判音符被拒 → 调用方列表永不推进 → 整谱无判定。
+已改为同向判断；顺带对齐 Pure 档 commit 第 4 参 = 0（Far/Lost 才传 dir，照抄
+10091e79c/e7e4/e824）。新增判定诊断日志（前 30 次 delta/grade/dir）。
+
+**retry 自动复位（Reset on Retry）**：不做 retry 按钮逆向，用时钟跳变检测——
+帧间负跳变 > 5s 判为 retry/倒带，一次性 deferred seek 回练习起点（任何 seek 的
+目标点）。面板新增开关；循环区间已设时起点 = A。同时加"循环卡死恢复"：pos 停滞
+> 1.5s 强制回 A（本次日志的 A=0 边界例外）。哨兵在循环回绕时自动解除（防拉锯）。
+
 ## 2026-09-10 — 改判定案（接管 handler + 跳板 v2）/ replay 定案（seek 平移）
 
 **Context（用户指示）**：CMP 运行时改写路线判死（dylib 写主程序 `__TEXT` 撞 CT/PAC，真机日志 `mprotect FAILED`）；
