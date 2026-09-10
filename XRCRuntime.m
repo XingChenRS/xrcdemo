@@ -4,7 +4,7 @@
 // dylib 用 image_base 手动重定位。容错：编译期 profile 偏移 fallback。
 
 #import <Foundation/Foundation.h>
-#import "AccCommon.h"    // acc_flog
+#import "XRCLog.h"    // xrc_log
 #import <mach-o/dyld.h>
 #import <mach-o/loader.h>
 #include "XRCRuntime.h"
@@ -54,12 +54,12 @@ xrc_runtime_t xrc_runtime_discover(void) {
 
     uint64_t data_start = 0, data_end = 0;
     if (!s_data_segment_range(base, &data_start, &data_end)) {
-        acc_flog(@"runtime discover: __DATA segment not found");
+        xrc_log(@"runtime discover: __DATA segment not found");
         return r;
     }
 
     // 诊断日志（下次真机日志直接暴露布局事实）
-    acc_flog(@"runtime discover: base=%llx DATA=[%llx,%llx) expect=%llx",
+    xrc_log(@"runtime discover: base=%llx DATA=[%llx,%llx) expect=%llx",
              base, data_start, data_end, base + XRC_INFO_OFF);
 
     // 扫描范围限定 __DATA 段内（预期位置前后截断到段边界）
@@ -69,7 +69,7 @@ xrc_runtime_t xrc_runtime_discover(void) {
     if (scan_end > data_end) scan_end = data_end;
     if (expect >= data_start && expect + 16 <= data_end) {
         const uint8_t *p = (const uint8_t *)expect;
-        acc_flog(@"runtime discover: expect 16B = %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
+        xrc_log(@"runtime discover: expect 16B = %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
                  p[0],p[1],p[2],p[3], p[4],p[5],p[6],p[7],
                  p[8],p[9],p[10],p[11], p[12],p[13],p[14],p[15]);
     }
@@ -82,14 +82,14 @@ xrc_runtime_t xrc_runtime_discover(void) {
         r.gp_update   = base + info->gp_update_off;
         r.mtp_vtable  = base + info->mtp_vtable_off;
         r.mtp_getpos  = base + info->mtp_getpos_off;
-        acc_flog(@"runtime info found: judge=%llx slot=%llx gpvt=%llx gpup=%llx mtpvt=%llx mtpgp=%llx",
+        xrc_log(@"runtime info found: judge=%llx slot=%llx gpvt=%llx gpup=%llx mtpvt=%llx mtpgp=%llx",
                  r.judge_entry, r.judge_slot, r.gp_vtable, r.gp_update,
                  r.mtp_vtable, r.mtp_getpos);
         return r;
     }
 
     // fallback：编译期 profile 偏移
-    acc_flog(@"runtime info NOT found — falling back to compile-time profile");
+    xrc_log(@"runtime info NOT found — falling back to compile-time profile");
     r.judge_entry = base + XRC_JUDGE_STUB_ENTRY_OFF;
     r.judge_slot  = base + XRC_JUDGE_SLOT_OFF;
     r.gp_vtable   = base + XRC_OFF_GP_VTABLE;

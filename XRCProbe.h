@@ -4,7 +4,7 @@
 //   2. slot.orig 是否合理（= 入口 VA 重定位值）
 //   3. vtable hook 是否真的装上（读回槽位，剥离 PAC 后比对函数指针）
 //   4. 转场锚点是否可用（槽 178 非空）
-// 结果写入日志（xrc-arcdemo.log）+ 全局能力结构 g_caps，UI 按能力门控。
+// 结果写入日志（xrcdemo.log）+ 全局能力结构 g_caps，UI 按能力门控。
 #pragma once
 
 #include <stdint.h>

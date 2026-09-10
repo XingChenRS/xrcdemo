@@ -1,7 +1,9 @@
-// xrc-arcdemo / Tweak.x — bootstrap + 悬浮 UI。
+// Tweak.x — xrcdemo bootstrap + 悬浮球 UI（悬浮球逻辑见 XRCFloatButton）。
 // 游戏逻辑全部在 XRC* 模块；交互全部在 XRCPracticePanel（ArcCreate 同构）。
-#define XRC_TWEAK_VERSION  @"v9.0.0"
+#define XRC_TWEAK_VERSION  @"beta1.0"
 #define XRC_BUILD_LABEL    @"Sideload"
+// 版本契约（xrcdemo beta1.0，2026-09-10）：功能稳定版基线 = 7.0.255；
+// 6.13 定位方法见 research/notes/arcdemo-crossversion-anchors-6.13-vs-7.0.255.md。
 // 构建号：CI 生成 xrc_build_stamp.h（commit sha + 时间）；本地构建回退 "dev"。
 // 日志首行打印——用于确认实际装配的版本，杜绝版本混淆。
 #if __has_include("xrc_build_stamp.h")
@@ -37,12 +39,12 @@
 
 extern UIApplication *UIApp;
 
-void acc_flog(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
+void xrc_log(NSString *fmt, ...) NS_FORMAT_FUNCTION(1, 2);
 
 #pragma mark - 全局 UI 状态（配置快照 + 控件）
 
 static xrc_config_t g_cfg = {0};
-XRCFloatButton *button = nil;   // AccCommon.h extern（UI hook 引用）
+XRCFloatButton *button = nil;   // XRCLog.h extern（UI hook 引用）
 
 #pragma mark - 主程序定位（唯一跨模块的 image base 实现）
 
@@ -67,20 +69,20 @@ uint64_t xrc_image_base(void) {
 
 #pragma mark - 菜单（UI 逻辑，配置读写走 XRCConfig）
 
-// 练习面板桥接：保留 AccMenuController 类名（供 UIWindow hook 引用），
+// 练习面板桥接：保留 XRCMenuBridge 类名（供 UIWindow hook 引用），
 // 内部转发到 XRCPracticePanel（ArcCreate 同构）。
-@interface AccMenuController : NSObject
+@interface XRCMenuBridge : NSObject
 + (instancetype)shared;
 - (void)show;
 - (void)hide;
 - (UIWindow *)keyWindow;
 @end
 
-@implementation AccMenuController
+@implementation XRCMenuBridge
 + (instancetype)shared {
-    static AccMenuController *s = nil;
+    static XRCMenuBridge *s = nil;
     static dispatch_once_t once;
-    dispatch_once(&once, ^{ s = [AccMenuController new]; });
+    dispatch_once(&once, ^{ s = [XRCMenuBridge new]; });
     return s;
 }
 - (void)show { [[XRCPracticePanel shared] show]; }
@@ -131,9 +133,9 @@ static void initButton(void) {
     // 单击 = 开/关练习面板（v9.0.0 用户定案：再单击关闭）
     button.onTap = ^{
         if ([[XRCPracticePanel shared] isVisible])
-            [[AccMenuController shared] hide];
+            [[XRCMenuBridge shared] hide];
         else
-            [[AccMenuController shared] show];
+            [[XRCMenuBridge shared] show];
     };
     // 长按 = 切换速度预设（原单击行为）
     button.onLongPress = ^{
@@ -146,7 +148,7 @@ static void initButton(void) {
                                        duration:0.5 finishHandler:^{}];
         }
     };
-    UIWindow *w = [[AccMenuController shared] keyWindow];
+    UIWindow *w = [[XRCMenuBridge shared] keyWindow];
     [button attachToWindow:w];
     if (!g_cfg.button_enabled) [button setHiddenState:YES];
 }
@@ -154,15 +156,15 @@ static void initButton(void) {
 #pragma mark - bootstrap
 
 // 文件日志（侧载下 Console 不便）。
-void acc_flog(NSString *fmt, ...) {
+void xrc_log(NSString *fmt, ...) {
     va_list ap; va_start(ap, fmt);
     NSString *line = [[NSString alloc] initWithFormat:fmt arguments:ap];
     va_end(ap);
-    NSLog(@"[xrc-arcdemo] %@", line);
+    NSLog(@"[xrcdemo] %@", line);
     @try {
         NSString *docs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
         if (!docs) return;
-        NSString *path = [docs stringByAppendingPathComponent:@"xrc-arcdemo.log"];
+        NSString *path = [docs stringByAppendingPathComponent:@"xrcdemo.log"];
         NSDateFormatter *df = [[NSDateFormatter alloc] init];
         df.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
         NSString *out = [NSString stringWithFormat:@"[%@] %@\n", [df stringFromDate:[NSDate date]], line];
@@ -180,18 +182,18 @@ void acc_flog(NSString *fmt, ...) {
 static void doBootstrap(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
-        acc_flog(@"==== xrc-arcdemo tweak %@ build %s doBootstrap begin ====",
+        xrc_log(@"==== xrcdemo %@ build %s doBootstrap begin ====",
                  XRC_TWEAK_VERSION, XRC_BUILD_STAMP);
         uint64_t base = xrc_image_base();
         g_xrc = xrc_runtime_discover();
-        @try { initButton(); }       @catch (NSException *e) { acc_flog(@"initButton EX: %@", e); }
-        @try { xrc_player_install(base); }      @catch (NSException *e) { acc_flog(@"player EX: %@", e); }
-        @try { xrc_gameplay_install_hooks(base); } @catch (NSException *e) { acc_flog(@"gameplay EX: %@", e); }
+        @try { initButton(); }       @catch (NSException *e) { xrc_log(@"initButton EX: %@", e); }
+        @try { xrc_player_install(base); }      @catch (NSException *e) { xrc_log(@"player EX: %@", e); }
+        @try { xrc_gameplay_install_hooks(base); } @catch (NSException *e) { xrc_log(@"gameplay EX: %@", e); }
         @try {
             if (xrc_judge_install(base))
                 xrc_judge_log_stats();   // 安装成功 → 打一次基线统计
-        } @catch (NSException *e) { acc_flog(@"judge EX: %@", e); }
-        @try { xrc_probe_run(); }               @catch (NSException *e) { acc_flog(@"probe EX: %@", e); }
+        } @catch (NSException *e) { xrc_log(@"judge EX: %@", e); }
+        @try { xrc_probe_run(); }               @catch (NSException *e) { xrc_log(@"probe EX: %@", e); }
         @try {
             static dispatch_once_t tw_once;
             dispatch_once(&tw_once, ^{
@@ -199,14 +201,14 @@ static void doBootstrap(void) {
                     { "gettimeofday", (void *)xrc_clock_gettimeofday, (void **)&xrc_clock_orig_gettimeofday },
                 };                rebind_symbols(rs, 1);
             });
-        } @catch (NSException *e) { acc_flog(@"timewarp EX: %@", e); }
+        } @catch (NSException *e) { xrc_log(@"timewarp EX: %@", e); }
         if (g_cfg.speed_count > 0)
             xrc_clock_set_rate((double)g_cfg.speeds[g_cfg.rate_index]);
-        acc_flog(@"config path: %@", xrc_config_path());
+        xrc_log(@"config path: %@", xrc_config_path());
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
             void *p = xrc_player_get();
             if (xrc_player_detect_change(p)) {
-                acc_flog(@"new song: player=%p", p);
+                xrc_log(@"new song: player=%p", p);
                 // v9.0.0：不再自动清循环（用户定案——清除只走面板「重置循环段落」按钮）
             }
             if (p) {
@@ -214,7 +216,7 @@ static void doBootstrap(void) {
                 xrc_player_poll_position(p);   // 位置兜底（getpos hook 不频繁触发）
             }
         }];
-        acc_flog(@"doBootstrap done");
+        xrc_log(@"doBootstrap done");
     });
 }
 
@@ -222,27 +224,27 @@ static void onAppDidEnterBackground(CFNotificationCenterRef center, void *observ
                                     CFStringRef name, const void *object,
                                     CFDictionaryRef userInfo) {
     xrc_clock_freeze_inc();
-    acc_flog(@"app -> background, warp frozen (count=%d)", xrc_clock_freeze_count());
+    xrc_log(@"app -> background, warp frozen (count=%d)", xrc_clock_freeze_count());
 }
 
 static void onAppWillEnterForeground(CFNotificationCenterRef center, void *observer,
                                      CFStringRef name, const void *object,
                                      CFDictionaryRef userInfo) {
     xrc_clock_freeze_dec();
-    acc_flog(@"app -> foreground, warp unfrozen (count=%d)", xrc_clock_freeze_count());
+    xrc_log(@"app -> foreground, warp unfrozen (count=%d)", xrc_clock_freeze_count());
 }
 
 static void onAppLaunched(CFNotificationCenterRef center, void *observer,
                           CFStringRef name, const void *object,
                           CFDictionaryRef userInfo) {
-    acc_flog(@"onAppLaunched notification fired");
+    xrc_log(@"onAppLaunched notification fired");
     doBootstrap();
 }
 
 %ctor {
-    acc_flog(@"ctor entered (dylib loaded ok)");
-    @try { %init(ui); }   @catch (NSException *e) { acc_flog(@"%%init(ui) EX: %@", e); }
-    @try { xrc_config_load(&g_cfg); }  @catch (NSException *e) { acc_flog(@"config EX: %@", e); }
+    xrc_log(@"ctor entered (dylib loaded ok)");
+    @try { %init(ui); }   @catch (NSException *e) { xrc_log(@"%%init(ui) EX: %@", e); }
+    @try { xrc_config_load(&g_cfg); }  @catch (NSException *e) { xrc_log(@"config EX: %@", e); }
     @try {
         xrc_judge_set_windows(g_cfg.judge_max_ms, g_cfg.judge_pure_ms,
                               g_cfg.judge_far_ms, g_cfg.judge_lost_ms);
@@ -264,7 +266,7 @@ static void onAppLaunched(CFNotificationCenterRef center, void *observer,
         NULL, CFNotificationSuspensionBehaviorCoalesce);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        acc_flog(@"3s fallback bootstrap");
+        xrc_log(@"3s fallback bootstrap");
         doBootstrap();
     });
 }

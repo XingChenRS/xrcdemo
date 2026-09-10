@@ -1,90 +1,83 @@
-# ArcDemo（xrc · runtime-ios）
+# xrcdemo（xrc · runtime-ios）
 
-Arcaea iOS 侧载 dylib：练习向运行时插件。xrc 工作区 `projects/runtime-ios/` 层的唯一活跃项目。
+Arcaea iOS 侧载 dylib：无越狱运行时插件。xrc 工作区 `projects/runtime-ios/` 层的活跃项目。
 
-> 仓库：<https://github.com/XingChenRS/ArcDemo>
-> 基准版本：**Arcaea iOS 7.0.255**（6.13 适配已于 2026-09-06 废弃，历史实现见 git 历史）
-> 证据与能力状态：以 [能力账本](../../../research/notes/xrc-arcaea-capability-ledger-2026-08-31.md) 为准；本文档只描述本仓库的定位、结构与纪律。
+> 仓库：`XingChenRS/xrcdemo`（新仓；本仓为旧 ArcDemo 的规范化重构，历史提交不迁移）
+> 版本：**beta1.0**（2026-09-10）
+> 基线版本：**Arcaea iOS 7.0.255**（6.13.10 定位方法见跨版本手册，功能实现以 7.0.255 为准）
+> 证据与能力状态：以 [能力账本](../../../research/notes/xrc-arcaea-capability-ledger-2026-08-31.md) 为准；本文档只描述本仓库的定位、功能、结构与纪律。
 
-## 1. 定位（xrc 宏观约定）
+## 1. 功能
 
-| 层 | 职责 | ArcDemo 的关系 |
-|---|---|---|
-| `projects/runtime-ios/ArcDemo`（本项目） | iOS 运行时插件：变速、seek、改判、重放/循环 | 本体 |
-| `projects/patcher`（预留） | 跨项目的二进制手术层（打桩、段生成、重签） | 暂不启用；Mach-O 手术先长在本地 `inject.py`，桩点稳定后评估抽取 |
-| `projects/core`（预留） | 共享 ABI / profile schema / 平台无关逻辑 | `xrc_abi.h`、`XRCClock.m`、profile schema 按"可无痛抽取"的口径编写 |
-| `projects/docs/arcmodwiki` | 语义知识（判定链、存档链、解锁语义） | 本项目所有偏移的逆向出处；地址不对只查笔记 |
-| `archive/legacy-arcdemo` | 历史 root injector / dylib | 不支持入口；其经验教训见账本 §7 |
-
-**本项目不重复承载**：资源编辑（workbench/APRE）、私服（server）、Android 运行时（runtime-android）、逆向知识沉淀（research/notes）——各归其层。
-
-## 2. 能力状态（对齐账本状态标记）
-
-| 能力 | 状态 | 平台/版本 | 说明 |
+| 功能 | 状态 | 实现层 | 说明 |
 |---|---|---|---|
-| 谱面时间变速（GameScene vtable 槽 155 hook） | **XRC-R/重定位** | iOS 7.0.255 | vtable 槽已定（`sub_100CA118C`），待真机验证 |
-| 视觉变速（fishhook gettimeofday） | **XRC-R** | iOS 7.0.255 | 无地址依赖，直接沿用 |
-| 基础 seek（音频 + 谱面钟平移） | **XRC-R/重定位** | iOS 7.0.255 | MTP vtable/getpos/seek/getPosition/getCurrentSound 已重定位；get_sound_length 未定位（进度条用 max_seen 兜底） |
-| 悬浮 UI / plist 配置 / 文件日志 | **XRC-R** | iOS 7.0.255 | `Documents/xrc-arcdemo.plist` |
-| 判定窗口参数 UI | **XRC-R/仅配置** | iOS 7.0.255 | 保存 Max/Pure/Far/Lost 四项，等待桩点 handler 生效 |
-| **动态改判（桩点+slot）** | **OPEN→实施中** | iOS 7.0.255 | 收敛架构 v1.1：桩点 `sub_1009D9ED8`（ABI 已确认），注入器待打桩 |
-| **seek-replay / A-B 循环（转场机制）** | **OPEN→实施中** | iOS 7.0.255 | 收敛架构 v2.x：纯 dylib（vtable 槽 178），零桩点 |
+| **Seek（任意时刻跳转）** | 已实现/真机验证 | 外置 dylib | 拖动进度条或 ±5s：音频 seek + 谱面钟基准平移，从目标时刻继续播放。已判定音符**不重现**、计分不回滚（练习定位语义） |
+| **循环片段播放** | 已实现/真机验证 | 外置 dylib | 面板设「起点」/「终点」后开启循环：到终点自动跳回起点往复。**注意**：已判定段落需**手动暂停 → Retry** 才能重新游玩（判定计数随重建归零）；Retry 后插件会自动跳回循环起点并继续。插件对 Retry 的检测 = 音频位置回跳（循环开启时生效） |
+| **变速** | 已实现/真机验证 | 外置 dylib | 改变谱面事件流速（0.05×–2.0×），**音频速度不变**。原理：每帧 hook `gp.update` 平移谱面时钟基准 + `gettimeofday` 时间域注入 |
+| **改判** | 已实现/真机验证 | **主程序插桩 + dylib** | 判定窗口四档任意调整（默认 25/50/100/120ms）。依赖二进制插桩：`inject.py` 把 trampoline 写入主程序 `__TEXT` 尾部空白页并覆盖判定核入口；**无越狱下修改 iOS 运行时 `__TEXT` 不可行（CT/PAC 拒绝），插桩发生在打包签名前**——这是本功能必须侵入主程序的原因 |
 
-## 3. 架构分层
+## 2. 使用
+
+### 安装（侧载）
+
+1. 用 `inject.py --stub` 对原始 `Arc-mobile` 打桩（写入跳板 + slot + info blob），产出打桩主程序；
+2. 将 `libArcDemo.dylib` 与 `libellekit.dylib` 放入 `Payload/Arc-mobile.app/Frameworks/`；
+3. 重签名并安装；
+4. 验证：日志首行出现 `==== xrcdemo beta1.0 build <stamp>`，且 `[probe] summary: stub=1 judge=1 gp=1 mtp=1`。
+
+### 面板
+
+- **单击悬浮球**开/关练习面板（可拖动位置）。
+- **时间轴**：单击/拖动 = seek（松手执行）。
+- **循环**：`起点`（取当前播放位置）→ 播放到终点 → `终点` → `循环 开`。面板右上角 `重置循环` 清除区间（唯一的清除入口；换歌/Retry 都不会动它）。
+- **速度**：滑杆 0.05×–2.0×，snap 0.05。
+- **判定窗口**：Max/Pure/Far/Lost 四档（毫秒），输入后立即生效（需主程序已打桩）。
+
+### 日志
+
+`Documents/xrcdemo.log`（同时走 NSLog 前缀 `[xrcdemo]`）。配置：`Documents/xrcdemo.plist`。
+
+## 3. 架构
 
 ```
-┌─ dylib（跨版本不变）──────────────────────────┐
-│  Tweak.x       bootstrap + 悬浮 UI/菜单       │
-│  XRCClock.m    时间基准/warp/freeze            │
-│  XRCPlayer.m   音频 registry/进度/曲长         │
-│  XRCGameplay.m gp hook + retime + seek + 转场  │
-│  XRCJudge.m    slot 注册 + 改判 handler        │
-│  XRCConfig.m   plist 配置                     │
-├─ 版本契约（跨版本唯一改动点）──────────────────┤
-│  XRCProfile.h  偏移/vtable 槽/字段布局          │
-│  profiles/<ver>.json  注入器与 dylib 共享的行   │
-│  xrc_abi.h     slot 布局 + handler 签名        │
-├─ 注入器（inject.py）───────────────────────────┤
-│  dylib 打包 + LC 注入（现有）                  │
-│  桩点：段生成 + 入口覆写 + slot + 重签（v1.1）  │
-└──────────────────────────────────────────────┘
+┌─ dylib（跨版本逻辑不变）────────────────────────────┐
+│  Tweak.x         bootstrap + 悬浮球/面板挂接          │
+│  XRCClock.m      时间域（真实时间单一实现 + warp/freeze）│
+│  XRCPlayer.m     音频（registry/player/进度/曲长/seek） │
+│  XRCGameplay.m   gp.update hook + retime + seek + 循环 │
+│  XRCJudge.m      改判 handler（slot 注册 + 判定复刻）   │
+│  XRCConfig.m     plist 配置                          │
+│  XRCFloatButton.m / XRCPracticePanel.m    UI          │
+│  XRCProbe.m      运行时能力探针（日志自证）             │
+│  XRCLog.h        统一日志（xrc_log）                  │
+├─ 版本契约（跨版本唯一改动点）─────────────────────────┤
+│  XRCProfile.h    偏移/vtable 槽/字段布局（每项带出处）   │
+│  xrc_abi.h       slot 布局 + info blob + handler 签名  │
+├─ 注入器（inject.py，与 profiles 对齐）───────────────┤
+│  dylib 打包 + LC_LOAD_DYLIB 注入（现有 load command 填充内）│
+│  改判桩：跳板 v2（40B）+ slot v2（24B）+ info blob（120B）│
+└──────────────────────────────────────────────────┘
 ```
 
-**原则**：跨版本只改 `XRCProfile.h` / `profiles/` 行；逻辑文件全部版本无关。桩点只服务"纯 dylib 够不着的能力"——目前只有改判。
+**原则**：跨版本只改 `XRCProfile.h`；逻辑文件全部版本无关。侵入主二进制的**唯一**理由是改判（判定核是直接 BL 调用，无间接层可用）。
 
-## 4. 证据纪律
+**两种已证伪/放弃的路线**（防止复活，详见 DEVLOG）：
+- dylib 运行时改主程序 `__TEXT`（mprotect/COW）→ 被 CT/PAC 页签名拒绝，**永久死刑**；
+- 程序化触发游戏 retry（triggerAction / 暂停层工厂）→ 三次尝试全部失败且污染 action 队列致卡死，**永久放弃**。
 
-- 所有偏移必须能回溯到研究笔记（`research/notes/ios-7.0.255-judgement-chain.md`、`ios-7.0.255-replay-chain.md`、`ios-6.13.10-stage1-patch-plan.md`）。**新增偏移 = 更新笔记 + profile 行同步提交**，禁止只写代码。
-- 真机验证记录：每次设备测试写 DEVLOG（日期、包哈希、现象、结论）；能力状态标记随之更新（XRC-R/XRC-V/XRC-S）。
-- 版本矩阵：6.13 与 7.0 各一行 profile；6.13 侧维持现状，机制验证在 7.0.255 进行。
-- 注入产物（打桩后的主二进制）与注入前基线哈希对照，记录在 workspace MANIFEST 流程内。
+## 4. 跨版本移植
 
-## 5. 配置
+- **手册**：[arcdemo-crossversion-anchors-6.13-vs-7.0.255.md](../../../research/notes/arcdemo-crossversion-anchors-6.13-vs-7.0.255.md)——五大功能在 6.13.10 与 7.0.255 上的完整锚点对照表 + 每功能"5 步定位法"。新版本适配从这份手册开始。
+- **纪律**：新增/修改偏移 = 先更新 research/notes 的语义笔记 → 再同步 `XRCProfile.h`（每项必须带出处注释）→ 两者同 commit。
+- **探针自证**：`[probe] summary` 一行给出全部 hook 状态；跨版本适配后先看这行。
 
-`Documents/xrc-arcdemo.plist`。键列表见 `XRCConfig.m`（重构后）；历史键 `judgeMaxMs/judgePureMs/judgeFarMs/judgeLostMs` 语义不变（判定窗口设计参数，v1.1 起生效）。
+## 5. 证据纪律（xrc 约定）
 
-## 6. 构建与注入
+- 所有偏移可回溯至 `research/notes/` 的语义笔记（判定链、时钟、音频链、retry 链、网络链）。
+- 真机验证记录写 DEVLOG（日期、现象、结论）；能力状态标记对齐能力账本（XRC-R/XRC-V/XRC-S/PROTO/OPEN）。
+- 打桩产物与注入前基线哈希成对登记（见 workspace MANIFEST 流程）。
 
-```sh
-make            # 产出 libArcDemo.dylib
-```
+## 6. 构建
 
-侧载：`libArcDemo.dylib` + `libellekit.dylib` 放入 `Arc-mobile.app/Frameworks`，由 `inject.py` 完成拷贝与 `LC_LOAD_DYLIB`/`LC_RPATH` 注入。
-
-`inject.py` 参数化要求（工作区 README 已声明"必须参数化后才能视为受支持入口"）：输入显式 `--app` 目录与 dylib 路径，不再假设根级 `ios/Payload`；桩点功能（v1.1）按 `profiles/<version>.json` 行执行。参数化完成前，本仓库内历史路径引用保持现状并标注。
-
-## 7. 里程碑
-
-| 里程碑 | 内容 | 验证 |
-|---|---|---|
-| v1.0（当前） | 7.0.255 profile + 模块化 dylib：谱面/视觉变速、配置 UI；音频链降级 | 7.0 真机变速生效 |
-| v1.1 | 注入器打桩 + 改判 handler | 7.0 真机动态改判生效 |
-| v2.0 | 转场 seek-replay | 7.0 真机 seek 后音符重飞、计分复位 |
-| v2.1 | A-B 循环（转场机制，白闪帧为预期形态） | 7.0 真机 |
-| v3（可选） | 触摸注入/自动演奏（旧桩点 #3 路线） | 待定 |
-
-架构依据：[收敛版架构 spec](../../../docs/superpowers/specs/2026-09-06-arcdemo-7.0-converged-architecture.md)
-
-## License
-
-MIT. See `LICENSE`.
+- 本地：Theos（`make`），产物 `.theos/obj/ArcDemo.dylib`。
+- CI：GitHub Actions（[build-tweak.yml](.github/workflows/build-tweak.yml)），三级缓存（Theos / iOS SDK / ellekit），产物 `libArcDemo.dylib` + `libellekit.dylib`。

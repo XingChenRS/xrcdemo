@@ -5,7 +5,7 @@
 // 「循环 / 自动重建」区块的注释。
 
 #import <Foundation/Foundation.h>
-#import "AccCommon.h"    // acc_flog
+#import "XRCLog.h"    // xrc_log
 #include <limits.h>
 #include <sys/mman.h>
 #include <errno.h>
@@ -44,12 +44,12 @@ static _Atomic(uint64_t) s_exec_gen      = 0;
 bool xrc_gameplay_request(xrc_op_t op, uint32_t param_ms) {
     void *scene = atomic_load(&xrc_gp_instance);
     if (!scene) {
-        acc_flog(@"request rejected: no live scene");
+        xrc_log(@"request rejected: no live scene");
         return false;
     }
     uint32_t cur = atomic_load(&s_pending_op);
     if (cur != XRC_OP_NONE) {
-        acc_flog(@"request rejected: pending op=%u", cur);
+        xrc_log(@"request rejected: pending op=%u", cur);
         return false;
     }
     atomic_store(&s_pending_scene, (uint64_t)scene);
@@ -86,11 +86,6 @@ static _Atomic(bool)     s_cap_valid = false;   // 音频基准是否已建立
 static int32_t           s_prev_audio_ms = -1;
 static _Atomic(uint32_t) s_retry_armed_gen = 0; // 回位触发计数（诊断）
 
-// 兼容 API（v9.0.0 起不再有 capture 目标——回位点只由循环 A 决定）。
-// 保留空实现避免破坏头文件与旧调用；总是返回 0。
-void xrc_gameplay_set_resume_ms(uint32_t ms) { (void)ms; }
-uint32_t xrc_gameplay_get_resume_ms(void) { return 0; }
-
 // 帧内调用（note_group 有效时）：音频位置回跳检测。
 static void s_retry_watch_tick(void) {
     // v9.0.0：监视常开（回位点由"循环是否开启"在触发时刻决定，无 capture 状态）。
@@ -112,10 +107,10 @@ static void s_retry_watch_tick(void) {
         if (xrc_loop_get_enabled() && b > a + 1000) {
             if (xrc_gameplay_request(XRC_OP_SEEK, a)) {
                 atomic_fetch_add(&s_retry_armed_gen, 1);
-                acc_flog(@"retry detected (audio jump %d) -> seek loop A %u", jump, a);
+                xrc_log(@"retry detected (audio jump %d) -> seek loop A %u", jump, a);
             }
         } else {
-            acc_flog(@"audio jump %d ignored (loop off)", jump);
+            xrc_log(@"audio jump %d ignored (loop off)", jump);
         }
     }
 }
@@ -131,7 +126,7 @@ static void s_exec_pending(void *self) {
     uint64_t req_scene = atomic_load(&s_pending_scene);
     if (req_scene != (uint64_t)self) {
         atomic_store(&s_pending_op, XRC_OP_NONE);
-        acc_flog(@"pending op=%u dropped (scene changed %llx -> %p)", op, req_scene, self);
+        xrc_log(@"pending op=%u dropped (scene changed %llx -> %p)", op, req_scene, self);
         return;
     }
 
@@ -152,7 +147,7 @@ static void s_exec_pending(void *self) {
     // 执行前最终校验（崩溃 guard）
     void *note_group = s_valid_note_group(self);
     if (!note_group) {
-        acc_flog(@"pending op=%u aborted: note_group/clock null (scene=%p)", op, self);
+        xrc_log(@"pending op=%u aborted: note_group/clock null (scene=%p)", op, self);
         atomic_store(&s_pending_op, XRC_OP_NONE);
         return;
     }
@@ -179,7 +174,7 @@ static void s_exec_pending(void *self) {
             *base_off += cur_ms - (int32_t)ms;
         }
         s_gp_last_real_us = 0;
-        acc_flog(@"seek executed: ms=%u (cur was %d)", ms, cur_ms);
+        xrc_log(@"seek executed: ms=%u (cur was %d)", ms, cur_ms);
     }
 
     if (op == XRC_OP_SEEK_REPLAY || op == XRC_OP_LOOP_REWIND) {
@@ -187,7 +182,7 @@ static void s_exec_pending(void *self) {
         // 被回跳检测误判为 retry。
         s_prev_audio_ms = (int32_t)xrc_player_position_ms();
         atomic_store(&s_cap_valid, true);
-        acc_flog(@"replay executed via seek (op=%u)", op);
+        xrc_log(@"replay executed via seek (op=%u)", op);
     }
 }
 
@@ -303,7 +298,7 @@ void xrc_gameplay_update(void *self, uint64_t a2, uint64_t a3, uint64_t a4, uint
                 xrc_loop_get_range(&a, &b);
                 if (xrc_loop_get_enabled() && pos < (int32_t)b - 200) {
                     if (xrc_gameplay_request(XRC_OP_LOOP_REWIND, a))
-                        acc_flog(@"loop stall at %d -> forced rewind to %u", pos, a);
+                        xrc_log(@"loop stall at %d -> forced rewind to %u", pos, a);
                 }
                 s_stall_since = now_us;
             }
@@ -320,7 +315,7 @@ void xrc_gameplay_install_hooks(uint64_t image_base) {
                                       g_xrc.gp_update - g_xrc.image_base,
                                       (void *)xrc_gameplay_update,
                                       (void **)&s_orig_gp_update);
-        if (slot != INT_MIN) acc_flog(@"gp.update vtable installed slot=%d", slot);
+        if (slot != INT_MIN) xrc_log(@"gp.update vtable installed slot=%d", slot);
     });
 }
 
@@ -347,7 +342,7 @@ void xrc_seek_ms(uint32_t ms) {
 
     xrc_clock_freeze_inc();
     if (xrc_player_seek_ms(player, ms))
-        acc_flog(@"audio seek to %u ms", ms);
+        xrc_log(@"audio seek to %u ms", ms);
 
     void *gp = atomic_load(&xrc_gp_instance);
     if (gp) {
@@ -431,7 +426,7 @@ void xrc_loop_set_enabled(bool on) {
     uint32_t a = atomic_load(&s_loop_a), b = atomic_load(&s_loop_b);
     if (on && b <= a + 1000) return;   // 区间不完整不允许开启
     atomic_store(&s_loop_enabled, on);
-    acc_flog(@"loop %s (A=%u B=%u)", on ? "ON" : "OFF", a, b);
+    xrc_log(@"loop %s (A=%u B=%u)", on ? "ON" : "OFF", a, b);
 }
 // 换歌/退出重进 = 练习状态归零（用户定义：只要退出重进就视作换歌，哪怕同一首）。
 // 触发链：Tweak.x 0.5s 轮询（player 指针变化）+ 面板 tick watcher（指针/曲长归零）。
@@ -440,8 +435,7 @@ void xrc_loop_reset_all(void) {
     atomic_store(&s_loop_enabled, false);
     atomic_store(&s_loop_a, 0);
     atomic_store(&s_loop_b, 0);
-    xrc_gameplay_set_resume_ms(0);
-    acc_flog(@"practice state cleared (song change)");
+    xrc_log(@"loop range reset (manual)");
 }
 void xrc_loop_get_range(uint32_t *from_ms, uint32_t *to_ms) {
     if (from_ms) *from_ms = atomic_load(&s_loop_a);
@@ -453,7 +447,7 @@ void xrc_loop_tick(void *gameplay, uint32_t pos_ms) {
     if (b <= a + 1000) return;
     if (pos_ms >= b) {
         if (xrc_gameplay_request(XRC_OP_LOOP_REWIND, a))
-            acc_flog(@"loop rewind at %u -> %u (seek shift)", pos_ms, a);
+            xrc_log(@"loop rewind at %u -> %u (seek shift)", pos_ms, a);
     }
 }
 

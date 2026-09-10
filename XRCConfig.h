@@ -9,7 +9,6 @@ typedef struct {
     NSInteger rate_index;
     BOOL      button_enabled;
     BOOL      toast;
-    BOOL      seek_replay;    // seek 松手后带进度转场重开（默认关——先跑稳纯 seek）
     int       judge_max_ms;
     int       judge_pure_ms;
     int       judge_far_ms;
@@ -26,7 +25,5 @@ void xrc_config_write_dict(NSDictionary *d);
 
 void xrc_config_normalize_judge(xrc_config_t *c);
 
-// 练习面板用：只读 seekReplay 键（不整表加载）。
-BOOL xrc_cfg_seek_replay(void);
 // 练习面板速度滑杆：写回当前 rateIndex 对应的预设键（与悬浮球长按切速同源）。
 void xrc_config_set_current_speed(float v);

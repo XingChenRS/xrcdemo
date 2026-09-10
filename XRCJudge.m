@@ -33,7 +33,7 @@
 //   本版：不写任何 __TEXT；出口逐条对齐；参数按 trampoline v2 契约（X3=X6）。
 
 #import <Foundation/Foundation.h>
-#import "AccCommon.h"    // acc_flog
+#import "XRCLog.h"    // xrc_log
 #include "XRCJudge.h"
 #include "XRCProfile.h"
 #include "XRCRuntime.h"
@@ -154,7 +154,7 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
         else if (grade == 1) atomic_fetch_add(&s_stat_far, 1);
         else                 atomic_fetch_add(&s_stat_lost, 1);
         if (n < 30)
-            acc_flog(@"[judge] #%u d=%d g=%d dir=%d th=%d/%d/%d/%d",
+            xrc_log(@"[judge] #%u d=%d g=%d dir=%d th=%d/%d/%d/%d",
                      n, delta, grade, dir, t_pure, t_far, t_lost, t_miss);
         return 1;
     }
@@ -162,13 +162,13 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
     // 超界 → Miss（原函数 return 0，不消费、不落账、无特效）
     atomic_fetch_add(&s_stat_miss, 1);
     if (n < 20)
-        acc_flog(@"[judge] #%u MISS passthru d=%d th=%d/%d/%d/%d",
+        xrc_log(@"[judge] #%u MISS passthru d=%d th=%d/%d/%d/%d",
                  n, delta, t_pure, t_far, t_lost, t_miss);
     return 0;
 }
 
 void xrc_judge_log_stats(void) {
-    acc_flog(@"[judge] calls=%u pure=%u far=%u lost=%u ln=%u miss=%u gated=%u",
+    xrc_log(@"[judge] calls=%u pure=%u far=%u lost=%u ln=%u miss=%u gated=%u",
              atomic_load(&s_call_total), atomic_load(&s_stat_pure),
              atomic_load(&s_stat_far), atomic_load(&s_stat_lost),
              atomic_load(&s_stat_ln), atomic_load(&s_stat_miss),
@@ -197,7 +197,7 @@ bool xrc_judge_install(uint64_t image_base) {
 #if XRC_HAS_JUDGE_STUB
     uint64_t slot_va = g_xrc.judge_slot;
     if (!slot_va) {
-        acc_flog(@"judge stub: slot anchor missing (stub not injected?)");
+        xrc_log(@"judge stub: slot anchor missing (stub not injected?)");
         return false;
     }
     // 落账/特效函数：绝对地址 = image_base + 静态偏移（thin 二进制无 slice 差）
@@ -210,7 +210,7 @@ bool xrc_judge_install(uint64_t image_base) {
     struct xrc_slot *slot = (struct xrc_slot *)slot_va;
     slot->handler = (void *)&s_xrc_judge_handler;
     atomic_store(&s_judge_active, true);
-    acc_flog(@"judge handler installed: slot=%p commit=%p commit_ln=%p",
+    xrc_log(@"judge handler installed: slot=%p commit=%p commit_ln=%p",
              (void *)slot, (void *)s_commit, (void *)s_commit_ln);
     return true;
 #else

@@ -1,9 +1,0 @@
-Package: moe.low.arc.arcdemo
-Name: ArcDemo
-Depends: mobilesubstrate
-Version: 7.3.2
-Architecture: iphoneos-arm
-Description: Arcaea sideload practice tweak
-Maintainer: XingChenRS
-Author: XingChenRS
-Section: Tweaks

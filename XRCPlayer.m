@@ -3,7 +3,7 @@
 // 各维护一份换歌检测）——此处收敛：hook 为唯一更新源，Tweak.x 轮询仅做兜底捕获。
 
 #import <Foundation/Foundation.h>
-#import "AccCommon.h"    // acc_flog
+#import "XRCLog.h"    // xrc_log
 #include <limits.h>
 #include "XRCPlayer.h"
 #include "XRCGameplay.h"   // xrc_swizzle_vtable（同 dylib 内跨模块）
@@ -44,7 +44,7 @@ void xrc_player_install(uint64_t image_base) {
                                       (void *)s_tw_mtp_getpos,
                                       (void **)&s_orig_mtp_getpos);
         if (slot != INT_MIN)
-            acc_flog(@"mtp.getpos vtable installed slot=%d (runtime anchor)", slot);
+            xrc_log(@"mtp.getpos vtable installed slot=%d (runtime anchor)", slot);
     } else if (XRC_OFF_MTP_VTABLE != 0 && XRC_OFF_MTP_GETPOS != 0) {
         // 编译期 profile fallback
         extern uint64_t xrc_image_base(void);
@@ -53,7 +53,7 @@ void xrc_player_install(uint64_t image_base) {
                                       (void *)s_tw_mtp_getpos,
                                       (void **)&s_orig_mtp_getpos);
         if (slot != INT_MIN)
-            acc_flog(@"mtp.getpos vtable installed slot=%d (profile fallback)", slot);
+            xrc_log(@"mtp.getpos vtable installed slot=%d (profile fallback)", slot);
     }
     if (XRC_OFF_CH_GET_POSITION)   s_ch_get_position   = (ch_get_position_fn)  (image_base + XRC_OFF_CH_GET_POSITION);
     if (XRC_OFF_GET_CURRENT_SOUND) s_get_current_sound = (get_current_sound_fn)(image_base + XRC_OFF_GET_CURRENT_SOUND);

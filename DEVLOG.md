@@ -1,136 +1,42 @@
-# DEVLOG
+# DEVLOG — xrcdemo
 
-ArcDemo 演进记录。能力状态标记与 [xrc 能力账本](../../research/notes/xrc-arcaea-capability-ledger-2026-08-31.md) 对齐（XRC-R 运行中 / XRC-V 已验证 / XRC-S 静态闭环 / PROTO 失败原型 / OPEN 未闭合）。
+演进记录。能力状态标记与 [xrc 能力账本](../../../research/notes/xrc-arcaea-capability-ledger-2026-08-31.md) 对齐（XRC-R 运行中 / XRC-V 已验证 / XRC-S 静态闭环 / PROTO 失败原型 / OPEN 未闭合）。
 
-## 2026-09-10 — v8.9.6：循环 = 到 B 自动重建场景（triggerAction retry）+ 面板中文化
+> 本仓自旧 ArcDemo 规范化而来（历史提交不迁移）；**beta1.0 为功能稳定基线**。
+> 早期演进细节见旧仓 git 历史与 workspace `research/notes/`。
 
-**用户定案**：循环练习 = 到 B 点自动"完整重建场景"（等同暂停菜单 retry 的效果），
-重建后从 A 点续播——而不是旧版的"seek 平移到 A（音符不重现）"。
+## 2026-09-10 — beta1.0 基线（规范化重构）
 
-**实现（XRCGameplay.m 自动重建状态机）**：
-- 到 B → `xrc_clock_freeze_inc()`（对齐游戏暂停语义）→ 100ms → 程序化调用
-  `triggerAction(GameModel, action=13, 1, 0, 0)`（= 暂停菜单 Retry 的同一函数，
-  `sub_100B69644`；GameModel = `*(*(qword_101673DD8)+0x10)`）。
-- 新场景出现（scene 指针变化）→ pending seek 回 A（新场景首帧执行）→ 解冻。
-- 失败降级：2s 超时（trigger 无效）→ 解冻 + 日志；手动 retry 仍经音频回跳回 A。
-- 换歌（player 指针变化）→ `xrc_loop_reset_all()` 清练习状态；retry 不触发（同一播放器）。
-- 循环卡死恢复仅在 IDLE 状态生效（重建期间不抢执行）。
+**功能集**（全部真机验证）：seek（任意时刻跳转 + 继续播放）、循环片段播放（到终点回起点；已判段落需手动 Retry 重游，插件在 retry 后自动回起点）、变速（谱面事件 0.05–2.0×，音频不变）、改判（主程序插桩 + dylib handler，四档窗口）。
 
-**面板交互重排（用户按玩家视角定）**：
-- `起点` = 当前播放位置为 A（清旧终点，弹"待设终点"提示）；`终点` = 当前播放位置为 B
-  （需先设起点，To≥A+1s）；`循环 开/关` 仅负责开关（区间不完整置灰）。
-- 按钮动态显示时间（`起点 01:23` / `终点 02:10`）。
-- 时间轴**双指框选已移除**（用户：精度太低）；拖拽 = 纯 seek 预览。
-- 全部 UI 中文化 + 顶部 tips 行 + 大字号（15pt）。
-- 新增偏移进 profile：`XRC_OFF_SERVICE_LOCATOR`/`XRC_OFF_ACTION_TRIGGER`/`XRC_ACTION_RETRY`。
+**本轮清理**：
+- 命名统一：`xrc_log` 统一日志（`Documents/xrcdemo.log`）、`XRCMenuBridge`、`XRCLog.h`；删除遗留 `WQSuspendView/`、`libs/`、`control`、`Prefix.pch`。
+- 死代码下线：`xrc_cfg_seek_replay`（无消费者）、`resume_ms` capture 空实现（被 v9.0.0"仅循环 A 回位"取代）。
+- 循环状态的自动清除**全部移除**（唯一清除入口 = 面板「重置循环」）；Retry 回位仅在循环开启时生效。
 
-**注意**：`triggerAction` 直调是实验路径（暂停态是否前置待真机验证）；日志会打
-`loop auto-retry: ...` 全链。若触发无效会看到 `TIMEOUT` 并自动解冻（安全）。
+**已证伪/放弃路线（禁止复活）**：
+1. dylib 运行时写主程序 `__TEXT`（mprotect/COW）→ CT/PAC 页签名拒绝（真机 `mprotect FAILED` 实测）。
+2. 程序化 retry：v8.9.6 直调 `triggerAction(13)` 被静默忽略；v8.9.7 建暂停层 + setup 仍被忽略（Retry 回调首校验 `PauseLayer+0x298==1`）；v8.9.8 补标志后仍忽略，且 9 次尝试污染 GameModel action 队列 → 手动 retry 卡死转场界面。**retry 与暂停流程深度耦合，外部驱动不可控。**
+3. 转场直调 `sub_100CA9590`：槽 178 是 this 调整 thunk（`SUB X0,#0x2B0`），传 GameScene 指针即指针错位（UAF 的一半根因）；即使修正槽号，仍有"旧场景已拆/新场景未构造完"的时序窗口。
 
-## 2026-09-10 — v8.9.5：retry 监视改确定性（音频回跳）+ retry 重建链逆向落笔
+**跨版本**：6.13.10 × 7.0.255 锚点对照表落于 [research/notes/arcdemo-crossversion-anchors-6.13-vs-7.0.255.md](../../../research/notes/arcdemo-crossversion-anchors-6.13-vs-7.0.255.md)。
 
-**决策（用户问「直调场景重置 vs 手动 retry + 跳转」）**：保留游戏自己的 retry——它走
-"销毁旧场景 → executor 工厂重建"全序，安全；直调转场路线已证槽 178 是 this 调整 thunk
-（`sub_100CAA0E4: SUB X0,#0x2B0; B sub_100CA9590`），旧实现传 GameScene 指针 = 错位调用，
-**这是当年 UAF 的另一半根因**。直调路线永久废弃。
+## 2026-09-10 — v9.0.0（beta1.0 前的最后功能迭代）
 
-**retry 全链（已证）**：按钮点击 `sub_100948694` → ①`delegate->vtable[0x560](d,0)`
-→ ②`sub_100B69644(GameModel, action 13, 1, 0, 0)` → `sub_100B677A8` 查 action 名表 →
-`(*(GameModel+0x280))->vtable[14](executor, name, rest, 0, 0, 0, -1.0)`（重开工厂）
-→ ③`PauseLayer+0x2A0->vtable[2](delegate, 0)`。PauseLayer 工厂 `sub_100BACD34`。
+- 自动清除全下线：换歌/曲长归零不再清循环——真机证明 retry 重建同样会重置曲长（`len=143896->0`），自动判据必然误伤；清除改为面板「重置循环」手动按钮。
+- Retry 回位仅循环开启时回到 A；移除 capture 残留值（曾把进度锁到"随机位置"）。
+- 悬浮球单击 = 开/关面板。
 
-**"续玩"机制（已证）**：`sub_100CA118C`（场景构造）末段按音乐当前位置写 `self+1140`
-并 `sub_1009204E4(note_group, T, mode)` 跳过/快进 T 前音符——退出重进、异常曲转场都靠它。
+## 早期关键里程碑（旧 ArcDemo）
 
-**v8.9.5 实现**：retry 监视从"时钟跳变猜测"改为"**音频位置帧间回跳 < -10s**"检测
-（retry 重建必然令音频回曲首，单点演奏不可能产生），触发后写 pending seek（目标=capture），
-由 deferred 状态机在**新场景下一帧**执行。开关语义变为显式 capture：ON = 记录当前
-循环 A / 播放位置为回跳目标并弹 toast 确认；OFF = 解除。循环回绕不再解除监视，
-仅重置音频基准防误判。
+- **改判定案（v8.9.x，2026-09-10）**：判定核 `sub_10091E684` 五出口全复刻（commit/commit_ln/fx 调用形态逐条对齐）；跳板 v2（`MOV X3,X6` 转发 caller 的 a6）；真机验证生效。整谱不判的根因 = handler 门 2 方向写反（与门 1 同向：bit0==1 即 return 0）。
+- **判定链解剖（2026-09-10）**：双分支时钟（flag45）；CMP 级联 26/51/101/121（B）与 25/50/100/120（A）；LN 近失落账 `sub_100ACB6A4`。见 [judgement-correction 笔记](../../../research/notes/ios-7.0.255-judgement-correction-2026-09-10.md)。
+- **变速定位（2026-09-06→09）**：GameScene vtable 槽 103 = `sub_100CA7160`（帧去重模式确认）；槽 155 是场景初始化（只跑一次）——vtable 槽的"每帧性"必须用帧去重特征确认。
+- **音频链重定位（2026-09-06）**：MTP vtable `0x14B75B0`、getpos 槽 7、seek 槽 8、`Channel::getPosition`、`getCurrentSound`；决策不 hook FMOD（音画同步 DNR）。
+- **基准切换（2026-09-06）**：6.13 适配废弃，profile 单版本 7.0.255；6.13 知识转为跨版本手册。
 
-## 2026-09-10 — v8.9.4：判定全失效根因（门2 方向）+ retry 自动复位
+## 历史教训（PROTO，保留供跨版本决策）
 
-**判定整谱不判（唯一根因）**：handler 前置门 2（vtable 槽 6）方向写反。反汇编
-`10091e6c8 TBZ W0,#0 → 继续`（bit0==1 才 return 0，与门1 TBNZ 同向），实现写成了
-`!(值 & 1) → return 0` → 所有可判音符被拒 → 调用方列表永不推进 → 整谱无判定。
-已改为同向判断；顺带对齐 Pure 档 commit 第 4 参 = 0（Far/Lost 才传 dir，照抄
-10091e79c/e7e4/e824）。新增判定诊断日志（前 30 次 delta/grade/dir）。
-
-**retry 自动复位（Reset on Retry）**：不做 retry 按钮逆向，用时钟跳变检测——
-帧间负跳变 > 5s 判为 retry/倒带，一次性 deferred seek 回练习起点（任何 seek 的
-目标点）。面板新增开关；循环区间已设时起点 = A。同时加"循环卡死恢复"：pos 停滞
-> 1.5s 强制回 A（本次日志的 A=0 边界例外）。哨兵在循环回绕时自动解除（防拉锯）。
-
-## 2026-09-10 — 改判定案（接管 handler + 跳板 v2）/ replay 定案（seek 平移）
-
-**Context（用户指示）**：CMP 运行时改写路线判死（dylib 写主程序 `__TEXT` 撞 CT/PAC，真机日志 `mprotect FAILED`）；
-改判回到"静态桩 + 完全接管"，但这次把判定链**逐条解出**再写 handler。
-
-**判定链最终解剖（IDA 逐条核对）**：
-- 判定核 `sub_10091E684(note_group, note, ts)`：1 次 X2 保存；两条前置虚门（vtable[64]&1 → 0；vtable[48]&1==0 → 0）；
-  双分支 delta/dir；三级 CMP 级联（B: 26/51/101/121，A: 25/50/100/120）；**5 条出口**全数确认：
-  Pure/Far/Lost → `commit(=sub_100ACB880, 6 参)` + `fx[1]`；LN 区间 → `commit_ln(=sub_100ACB6A4, 3 参)` + `fx[0]`；超界 → return 0。
-- 关键新发现：落账第 6 参 X6 由调用方透传、判定核从不写 → 跳板必须在 BR 前 `MOV X3, X6`（跳板 v2）。
-- LN 落账第 3 参是**原始比较值**（不是 1/2）；分支 A 的 dir bias 是 **-3000**（delta 用 +3000）——两处旧假设已修正。
-- 时钟每帧由 `sub_10099A724` 计算（+32/+36/+40 由它写）；`+52<=0` 时计 -3000 前导。
-
-**改判架构（v8.9.1）**：
-- handler 完全复刻上述语义，阈值 = 运行时四档（atomic），**不写任何 `__TEXT`**。
-- 跳板 v2（40B）：ADRP/ADD/LDR/CBZ/MOV X3,X6/BR + native 重放 3 条 + B 回 entry+12；slot v2 = 24B。
-- 兼容门：probe 检测 tramp[4]==MOV X3,X6（stub_v2），v2 缺失则改判区禁用（避免 v1 跳板 + v8.9 handler 丢 a6）。
-
-**replay 定案**：转场直调（槽 178）两次 UAF 崩溃 → 彻底放弃；replay/循环 = **seek 平移**
-（音频 seek + 谱面钟 base 平移，判定比较 `|note - (cur - base)|`，`base -= (cur - target)` 即整体平移）。
-语义：已判 note 不重现、计分不回滚（练习定位）；完整重播 = 用户暂停菜单自 retry 后再 seek。
-
-**能力门控更新**：`XRC_HAS_TRANSITION` 保持 0（仅保留编译分支）；循环/seek-replay UI 依赖 `replay_available`（槽 178 探测）。
-
-**交付**：`incoming/arcaea-7.0/stubbed-main/Arc-mobile` v5（sha256 4c127deb…，stub v2 + slot v2 + info v2）。
-**要求**：dylib ≥ v8.9.0 必须配 v5 主程序；旧 v1 跳板 + 新 handler 会丢 a6（probe 会拦）。
-
-## 2026-09-07 — Deferred 状态机 + 能力门控
-
-- 崩溃修复：转场/seek 全部 deferred 到 gp.update 游戏循环内执行（UI 回调里旧场景可能已释放 → UAF）。状态机：SEEK / SEEK_REPLAY / LOOP_REWIND 三种操作，1.5s 冷却、4s 过期丢弃、代计数。UI 只登记。
-- 能力门控（不做双编译）：stub 未激活 → 改判区隐藏只读；seek-replay 默认关（config seekReplay，先跑稳纯 seek）；循环 UI 按转场能力显示。
-- A-B 循环改为 ArcCreate 练习模式风格：From/To 两次点击 + On/Off，To ≥ From+1000ms 夹取。
-- XRCRuntime 诊断日志（DATA 范围 + 预期 slot 字节）——runtime info 在真机仍 NOT found，下次日志定位。
-- 窗口求值器输出语义确认：*out = 单个 f32 窗口 ms（caller vadd_f32 到特效时间基），handler 用"调原函数 + 缩放"路线，无需复刻表 B。
-
-## 2026-09-06 — 音频链重定位（seek/进度条恢复）
-
-- MTP vtable = `0x1014B75B0`（RTTI 名 `20AudioProviderFMODiOS` 经 typeinfo `0x1014B7690` 验证）；getpos 槽 7 = `sub_1008E24F0`、seek 槽 8 = `sub_1008E253C`（形状与 6.13 逐条一致）。
-- `Channel::getPosition` 内层 = `sub_101033BBC`；`Channel::getCurrentSound` = `sub_10103415C`（日志串 "Channel::getCurrentSound" 已验）。
-- get_sound_length / registry 不追：进度条用 max_seen 兜底；player 实例由 getpos hook 直接缓存（不需要 registry 单例）。
-- 决策确认：不 hook FMOD 变速（音画同步已 DNR），只做读位置 + seekTo——与 6.13 同做法。
-
-## 2026-09-06 — 基准切换：7.0.255（6.13 适配废弃）
-
-- 6.13 适配废弃：删除 `include/ArcOffsets.h`（git 历史保留）；`XRCProfile.h` 单版本 7.0.255。
-- gp.update 重定位：GameScene vtable 槽 155 = `sub_100CA118C`（单参 `(GameScene*)`；内含 HUD syncer 调用 `0x100ca368c`）。谱面变速 hook 点就绪，待真机验证。
-- 音频链决策：不 hook FMOD/音频链。seek 与进度条在 7.0 降级为"未就绪"（UI 禁用，谱面钟平移保留、音频不动）。若日后恢复，先重定位 6.13 的四个锚点（get_registry/get_current_sound/get_sound_length/ch_get_position）与 MTP vtable。
-- CI 三级缓存（Theos/SDK/ellekit）就绪并验证命中：重跑时 Clone Theos / Download SDK / Build ellekit 全部 skipped。
-
-## 2026-09-06 — 架构收敛（v2 spec 定稿）
-
-决策（与 xrc 研究同步）：
-
-- **改判**：唯一侵入主二进制的功能。桩点 = `sub_1009D9ED8`（7.0.255 判定区间求值器，表 B 消费点），完全接管 handler；ABI 已确认（X0=note、X8=out_ptr、无 sret）。四桩点方案收敛为单桩点；Locator / LC_XRC_INFO 废弃。
-- **seek-replay / A-B 循环**：走 7.0 自带转场机制（`sub_100CA9590`，GameScene vtable 槽 178，a2=1 带进度重开；新场景 +1140=恢复位置，启动时 `sub_1009204E4` 跳过 T 前音符）。**纯 dylib，零桩点**。判定提交拦截降级为可选。白闪帧为预期形态（游戏原生转场表现），已接受。
-- **拖拽进度条实时预览**：放弃。
-- **音画同步 / BGM 变速**：不再追（FMOD 变速失败史 + DSP 时间拉伸成本过高）。
-- 源码整改：Tweak.x 单体拆分（XRCClock/XRCPlayer/XRCGameplay/XRCJudge/XRCConfig + XRCProfile.h + xrc_abi.h）；跨版本只动 profile。
-- 依据笔记：`research/notes/ios-7.0.255-replay-chain.md`（转场机制反编译全链）；spec：`docs/superpowers/specs/2026-09-06-arcdemo-7.0-converged-architecture.md`。
-
-## Scope Reset（历史，保留）
-
-活动树曾重置为纯侧载分支。
-
-保留：谱面变速（Gameplay.update vtable）、视觉变速（gettimeofday）、基础音乐播放器 seek、悬浮 UI 与 plist 配置、判定参数 UI（供后续设计使用）。
-
-移除：特权安装构建变体、主程序 payload 注入实验、运行时 `__TEXT` patch 尝试、静态判定 patch helper、音频变速与漂移校正实验、note replay / scorekeeper reset 实验、重复遗留工程。
-
-历史教训（PROTO）：
-
-- 运行时改写主 `__TEXT` 在普通侧载下不可行（页签名）。
-- v7.3 graft（entry→trampoline→`__DATA` slot）概念可行，但 Mach-O 布局修改不完整导致失败——本次以"新增独立段"根治（见收敛版 spec §2）。
-- note 对象级 replay（清 active list / 重激活 / vtable 手术）导致 UAF，已判死——7.0 重放改走游戏转场机制。
+- 运行时改写主程序 `__TEXT`：普通侧载下不可行（页签名）。
+- note 对象级 replay（清 active list / 重激活 / vtable 手术）导致 UAF——重放的正确设施是"游戏自己的场景重建（Retry）+ 时钟平移"。
+- v7.3 graft（entry→trampoline→slot）概念可行；现代实现 = v2 跳板 + slot v2 + info blob（本仓 inject.py）。

@@ -8,7 +8,7 @@
 #import "XRCPracticePanel.h"
 #import "XRCFloatButton.h"
 #import "WHToast/WHToast.h"
-#import "AccCommon.h"
+#import "XRCLog.h"
 #include "XRCConfig.h"
 #include "XRCGameplay.h"
 #include "XRCClock.h"
@@ -233,12 +233,9 @@
         __strong typeof(weakSelf) self2 = weakSelf;
         if (!self2) return;
         if (finished) {
-            // Release = seek (deferred into the game loop). replay decision 2026-09-10:
-            // seek-shift IS the replay path (already-judged notes do not respawn).
-            if (xrc_cfg_seek_replay())
-                xrc_gameplay_request(XRC_OP_SEEK_REPLAY, ms);
-            else
-                xrc_gameplay_request(XRC_OP_SEEK, ms);
+            // 松手 = deferred seek（在游戏循环内执行）。v9.0.0 起 SEEK 与
+            // SEEK_REPLAY 走同一实现（seek 平移）；统一用 SEEK。
+            xrc_gameplay_request(XRC_OP_SEEK, ms);
         }
     };
     [self addSubview:self.timeline];

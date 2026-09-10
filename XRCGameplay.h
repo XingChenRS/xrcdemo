@@ -40,12 +40,6 @@ xrc_op_t xrc_gameplay_pending_op(void);
 // （xrc_gameplay_request），此函数仅内部/兼容用。
 void xrc_seek_ms(uint32_t ms);
 
-// retry 监视（2026-09-10）：练习起点（ms）。任何 seek 都会设置它；
-// 之后检测到"帧间时钟大幅回跳"（= 用户 retry / 自然倒带）时自动 seek 回该点，
-// 一次性生效。设 0 解除。
-void xrc_gameplay_set_resume_ms(uint32_t ms);
-uint32_t xrc_gameplay_get_resume_ms(void);
-
 // 读取谱面钟当前值（按 XRCProfile 的 clock 布局）。
 int32_t xrc_chart_clock_ms(void *note_group);
 

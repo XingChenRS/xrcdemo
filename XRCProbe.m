@@ -4,7 +4,7 @@
 
 #import <Foundation/Foundation.h>
 #import <mach-o/dyld.h>
-#import "AccCommon.h"
+#import "XRCLog.h"
 #include "XRCProbe.h"
 #include "XRCRuntime.h"
 #include "XRCProfile.h"
@@ -48,7 +48,7 @@ void xrc_probe_run(void) {
     uint64_t entry = g_xrc.found ? g_xrc.judge_entry
                                  : (g_xrc.image_base + XRC_JUDGE_STUB_ENTRY_OFF);
     g_caps.stub_present = s_entry_patched(entry);
-    acc_flog(@"[probe] stub_present=%d (entry=%llx w0=%08x)",
+    xrc_log(@"[probe] stub_present=%d (entry=%llx w0=%08x)",
              g_caps.stub_present, entry,
              entry ? *(const uint32_t *)entry : 0);
 
@@ -58,7 +58,7 @@ void xrc_probe_run(void) {
         extern uint64_t xrc_image_base(void);
         const uint32_t *tr = (const uint32_t *)(xrc_image_base() + 0x146800CULL);
         g_caps.stub_v2 = (tr[4] == 0xAA0603E3u);
-        acc_flog(@"[probe] trampoline v2=%d (tramp[4]=%08x)", g_caps.stub_v2, tr[4]);
+        xrc_log(@"[probe] trampoline v2=%d (tramp[4]=%08x)", g_caps.stub_v2, tr[4]);
     }
 
     // 2. 改判 handler 是否活：slot v2 {handler, orig, reserved}。
@@ -67,31 +67,31 @@ void xrc_probe_run(void) {
         const void *handler = *(const void *const *)g_xrc.judge_slot;
         uint64_t orig = *(const uint64_t *)(g_xrc.judge_slot + 8);
         g_caps.judge_handler_live = xrc_judge_is_active() && g_caps.stub_v2;
-        acc_flog(@"[probe] judge slot=%llx handler_slot=%p orig_slot=%llx active=%d",
+        xrc_log(@"[probe] judge slot=%llx handler_slot=%p orig_slot=%llx active=%d",
                  g_xrc.judge_slot, handler, orig, g_caps.judge_handler_live);
     } else {
-        acc_flog(@"[probe] judge slot anchor missing (stub not injected?)");
+        xrc_log(@"[probe] judge slot anchor missing (stub not injected?)");
     }
 
     // 3. gp.update vtable hook 是否装上：vtable[103] 应指向我方函数。
     uint64_t gp_slot = s_vt_slot(g_xrc.gp_vtable, 103);
     g_caps.gp_hook_live = (gp_slot != 0) && (gp_slot != g_xrc.gp_update);
-    acc_flog(@"[probe] gp vtable=%llx slot103=%llx expect_orig=%llx hook_live=%d",
+    xrc_log(@"[probe] gp vtable=%llx slot103=%llx expect_orig=%llx hook_live=%d",
              g_xrc.gp_vtable, gp_slot, g_xrc.gp_update, g_caps.gp_hook_live);
 
     // 4. MTP getpos hook（槽 7）
     uint64_t mtp_slot = s_vt_slot(g_xrc.mtp_vtable, 7);
     g_caps.mtp_hook_live = (mtp_slot != 0) && (mtp_slot != g_xrc.mtp_getpos);
-    acc_flog(@"[probe] mtp vtable=%llx slot7=%llx expect_orig=%llx hook_live=%d",
+    xrc_log(@"[probe] mtp vtable=%llx slot7=%llx expect_orig=%llx hook_live=%d",
              g_xrc.mtp_vtable, mtp_slot, g_xrc.mtp_getpos, g_caps.mtp_hook_live);
 
     // 5. 转场可用性：槽 178 非空
     uint64_t trans = s_vt_slot(g_xrc.gp_vtable, XRC_TRANSITION_VTABLE_SLOT);
     g_caps.replay_available = (trans != 0);
-    acc_flog(@"[probe] transition slot178=%llx replay_available=%d",
+    xrc_log(@"[probe] transition slot178=%llx replay_available=%d",
              trans, g_caps.replay_available);
 
-    acc_flog(@"[probe] summary: stub=%d judge=%d gp=%d mtp=%d replay=%d",
+    xrc_log(@"[probe] summary: stub=%d judge=%d gp=%d mtp=%d replay=%d",
              g_caps.stub_present, g_caps.judge_handler_live,
              g_caps.gp_hook_live, g_caps.mtp_hook_live, g_caps.replay_available);
 }
