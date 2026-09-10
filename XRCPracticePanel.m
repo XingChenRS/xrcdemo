@@ -1,3 +1,17 @@
+- (void)toggleRepeat {
+    if (xrc_loop_get_enabled()) {
+        xrc_loop_set_enabled(false);
+    } else {
+        uint32_t from = 0, to = 0;
+        xrc_loop_get_range(&from, &to);
+        if (to <= from + 1000) {
+            [WHToast showMessage:@"请先设置循环起点和终点" duration:1.4 finishHandler:^{}];
+            return;
+        }
+        xrc_loop_set_enabled(true);
+    }
+    [self refresh];
+}
 // XRCPracticePanel.m — ArcCreate 同构练习面板实现。
 // 交互对齐 external/ArcCreate Assets/Scripts/Gameplay/Audio/Practice/：
 //   PracticeTimeline（点击/拖动 = seek + 循环区间可视化）
@@ -20,7 +34,6 @@
 // ---------------- 时间轴视图（PracticeTimeline 同构） ----------------
 @interface XRCTimelineView : UIView
 @property (nonatomic, copy) void (^onScrub)(uint32_t ms, BOOL finished);
-@property (nonatomic, copy) void (^onRangeSelected)(uint32_t from_ms, uint32_t to_ms);
 @property (nonatomic, assign) uint32_t lengthMs;
 @property (nonatomic, assign) uint32_t positionMs;
 @property (nonatomic, assign) uint32_t loopFromMs;
@@ -64,29 +77,14 @@
 
 - (void)onPan:(UIPanGestureRecognizer *)g {
     CGPoint p = [g locationInView:self];
-    if (g.state == UIGestureRecognizerStateBegan) {
-        _dragStartX = p.x;
-        self.rangeDragging = NO;
-    }
-    // 水平位移超过阈值 = 选区模式（ArcCreate 的时间轴拖动=seek，这里
-    // 单指拖动用于 seek，双指/长按起手不动时切选区——简化为：拖动 = seek，
-    // 长按后拖动 = 选区间）
+    // 2026-09-10: drag = pure seek preview, execute on release. Two-finger
+    // range selection removed (user: precision too low). Loop range is set
+    // exclusively via the Set From / Set To buttons.
     if (g.state == UIGestureRecognizerStateChanged) {
-        if (!self.rangeDragging && fabs(p.x - _dragStartX) > 24 && g.numberOfTouches > 1) {
-            self.rangeDragging = YES;
-        }
-        if (self.rangeDragging) {
-            uint32_t a = [self msAtX:_dragStartX];
-            uint32_t b = [self msAtX:p.x];
-            if (a > b) { uint32_t t = a; a = b; b = t; }
-            if (self.onRangeSelected) self.onRangeSelected(a, b);
-        } else {
-            if (self.onScrub) self.onScrub([self msAtX:p.x], NO);
-        }
+        self.positionMs = [self msAtX:p.x];
     }
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
-        if (!self.rangeDragging && self.onScrub) self.onScrub([self msAtX:p.x], YES);
-        self.rangeDragging = NO;
+        if (self.onScrub) self.onScrub([self msAtX:p.x], YES);
     }
 }
 
@@ -151,7 +149,7 @@
 @property (nonatomic, strong) UIButton *retryResumeBtn;
 @property (nonatomic, assign) CGFloat contentHeight;
 @property (nonatomic, strong) NSTimer *timer;
-@property (nonatomic, assign) uint32_t pendingFrom;   // 第一次点 From 的暂存（ArcCreate 语义：直接取当前）
+@property (nonatomic, assign) BOOL pendingTo;   // Set From 后等待 Set To
 @end
 
 @implementation XRCPracticePanel
@@ -230,11 +228,11 @@
 
     // ---- title bar ----
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W - 76, 20)];
-    title.text = @"Practice";
+    title.text = @"练习面板";
     title.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
     title.textColor = [UIColor whiteColor];
     [self addSubview:title];
-    UIButton *close = [self makeButton:@"Exit" action:@selector(hide)];
+    UIButton *close = [self makeButton:@"退出" action:@selector(hide)];
     close.frame = CGRectMake(x0 + W - 70, y - 3, 70, 26);
     [close setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
     [self addSubview:close];
@@ -254,10 +252,6 @@
             else
                 xrc_gameplay_request(XRC_OP_SEEK, ms);
         }
-    };
-    self.timeline.onRangeSelected = ^(uint32_t a, uint32_t b) {
-        if (b > a + 1000) xrc_loop_set_range(a, b);
-        [weakSelf refresh];
     };
     [self addSubview:self.timeline];
     y += 36 + gap;
@@ -279,13 +273,13 @@
     CGFloat colW = (W - gap) / 2.0f;
     CGFloat rx = x0 + colW + gap;
 
-    self.fromBtn = [self makeButton:@"Set From" action:@selector(setFrom)];
+    self.fromBtn = [self makeButton:@"起点" action:@selector(setFrom)];
     self.fromBtn.frame = CGRectMake(x0, y, colW / 2 - 4, rowH);
     [self addSubview:self.fromBtn];
-    self.toBtn = [self makeButton:@"Set To" action:@selector(setTo)];
+    self.toBtn = [self makeButton:@"终点" action:@selector(setTo)];
     self.toBtn.frame = CGRectMake(x0 + colW / 2 + 4, y, colW / 2 - 4, rowH);
     [self addSubview:self.toBtn];
-    self.onOffBtn = [self makeButton:@"Repeat OFF" action:@selector(toggleRepeat)];
+    self.onOffBtn = [self makeButton:@"循环 关" action:@selector(toggleRepeat)];
     self.onOffBtn.frame = CGRectMake(x0, y + rowH + gap, colW, rowH);
     [self addSubview:self.onOffBtn];
 
@@ -338,8 +332,18 @@
     CGFloat rightBottom = y + 18 + 2 * (rowH + gap) - gap + 13;
     y = MAX(leftBottom, rightBottom) + blockGap;
 
+    // ---- tips（拖拽=跳转；循环 = 设起点→设终点→开循环；到终点自动重建回起点）----
+    UILabel *tips = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
+    tips.text = @"拖时间轴=跳转 ｜ 循环: 设起点 → 播放到终点 → 设终点 → 开循环";
+    tips.font = [UIFont systemFontOfSize:10];
+    tips.textColor = [UIColor colorWithWhite:0.55 alpha:1.0];
+    tips.adjustsFontSizeToFitWidth = YES;
+    tips.minimumScaleFactor = 0.8;
+    [self addSubview:tips];
+    y += 14 + gap;
+
     // ---- reset-on-retry toggle（勾选后：游戏内 retry 自动跳回练习起点）----
-    self.retryResumeBtn = [self makeButton:@"Reset on Retry: OFF" action:@selector(toggleRetryResume)];
+    self.retryResumeBtn = [self makeButton:@"重开回起点 关" action:@selector(toggleRetryResume)];
     self.retryResumeBtn.frame = CGRectMake(x0, y, W, rowH);
     [self addSubview:self.retryResumeBtn];
     y += rowH + blockGap;
@@ -430,7 +434,7 @@
 - (UIButton *)makeButton:(NSString *)title action:(SEL)sel {
     UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
     [b setTitle:title forState:UIControlStateNormal];
-    b.titleLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightMedium];
+    b.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium];
     [b setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     b.backgroundColor = [UIColor colorWithWhite:0.25 alpha:1.0];
     b.layer.cornerRadius = 6;
@@ -457,11 +461,21 @@
     self.speedLabel.text = [NSString stringWithFormat:@"%.2fx", rate];
     if (fabs(self.speedSlider.value - rate) > 0.001f) self.speedSlider.value = rate;
 
-    [self.onOffBtn setTitle:loopOn ? @"Repeat ON" : @"Repeat OFF" forState:UIControlStateNormal];
+    BOOL rangeOk = (to > from + 1000);
+    self.onOffBtn.enabled = rangeOk || loopOn;
+    self.onOffBtn.alpha = (rangeOk || loopOn) ? 1.0 : 0.4;
+    [self.onOffBtn setTitle:(loopOn ? @"循环 开" : @"循环 关") forState:UIControlStateNormal];
     self.onOffBtn.backgroundColor = loopOn ? [UIColor colorWithRed:0.2 green:0.5 blue:0.9 alpha:1.0]
                                            : [UIColor colorWithWhite:0.25 alpha:1.0];
+    uint32_t fs = from / 1000, ts2 = to / 1000;
+    [self.fromBtn setTitle:(from > 0 ? [NSString stringWithFormat:@"起点 %02u:%02u", fs/60, fs%60]
+                                     : @"起点")
+                  forState:UIControlStateNormal];
+    [self.toBtn setTitle:(rangeOk ? [NSString stringWithFormat:@"终点 %02u:%02u", ts2/60, ts2%60]
+                                  : (self.pendingTo ? @"终点(播放中)" : @"终点"))
+                forState:UIControlStateNormal];
     BOOL resumeArmed = (xrc_gameplay_get_resume_ms() != 0);
-    [self.retryResumeBtn setTitle:(resumeArmed ? @"Reset on Retry: ON" : @"Reset on Retry: OFF")
+    [self.retryResumeBtn setTitle:(resumeArmed ? @"重开回起点 开" : @"重开回起点 关")
                           forState:UIControlStateNormal];
     self.retryResumeBtn.backgroundColor = resumeArmed
         ? [UIColor colorWithRed:0.2 green:0.5 blue:0.9 alpha:1.0]
@@ -497,27 +511,47 @@
 }
 
 // ---- Repeat From/To/On-Off（PracticeMenu 语义 + To >= From+1000 夹取） ----
+// 循环起点 = 当前播放位置（2026-09-10 语义重排；旧版是"当前位置前 2 秒"）。
+// 设起点后清掉旧终点，进入"待设终点"状态。
 - (void)setFrom {
     uint32_t pos = xrc_player_position_ms();
-    uint32_t from = pos > 2000 ? pos - 2000 : 0;
-    uint32_t to = 0;
-    xrc_loop_get_range(NULL, &to);
-    if (to < from + 1000) to = from + 1000;
-    xrc_loop_set_range(from, to);
+    xrc_loop_set_enabled(false);            // 改区间先关循环
+    xrc_loop_set_range(pos, 0);
+    self.pendingTo = YES;
+    uint32_t cs = pos / 1000;
+    [WHToast showMessage:[NSString stringWithFormat:@"起点 %02u:%02u，播放到终点再按 终点",
+                          cs/60, cs%60]
+                duration:1.4 finishHandler:^{}];
     [self refresh];
 }
+
 - (void)setTo {
+    uint32_t from = 0, oldTo = 0;
+    xrc_loop_get_range(&from, &oldTo);
+    BOOL hasFrom = self.pendingTo || (oldTo > from + 1000) || (from > 0);
+    if (!hasFrom) {
+        [WHToast showMessage:@"请先播放到起点位置按 起点" duration:1.4 finishHandler:^{}];
+        return;
+    }
     uint32_t pos = xrc_player_position_ms();
-    uint32_t from = 0;
-    xrc_loop_get_range(&from, NULL);
-    if (pos < from + 1000) pos = from + 1000;
+    if (pos < from + 1000) {
+        [WHToast showMessage:@"终点需在起点 1 秒之后" duration:1.4 finishHandler:^{}];
+        return;
+    }
+    xrc_loop_set_enabled(false);
     xrc_loop_set_range(from, pos);
+    self.pendingTo = NO;
+    uint32_t fs = from / 1000, ts = pos / 1000;
+    [WHToast showMessage:[NSString stringWithFormat:@"循环区间 %02u:%02u - %02u:%02u，可开循环",
+                          fs/60, fs%60, ts/60, ts%60]
+                duration:1.4 finishHandler:^{}];
     [self refresh];
 }
+
 - (void)toggleRetryResume {
     if (xrc_gameplay_get_resume_ms() != 0) {
         xrc_gameplay_set_resume_ms(0);   // 解除
-        [WHToast showMessage:@"Reset on Retry OFF" duration:0.8 finishHandler:^{}];
+        [WHToast showMessage:@"重开回起点：关" duration:0.8 finishHandler:^{}];
     } else {
         // capture 目标点 = 优先：已设循环的 A；否则当前播放位置
         uint32_t a = 0, b = 0;
@@ -526,7 +560,7 @@
         xrc_gameplay_set_resume_ms(target);
         uint32_t cs = target / 1000;
         [WHToast showMessage:[NSString stringWithFormat:
-            @"Reset on Retry ON -> resume at %02u:%02u", cs/60, cs%60]
+            @"重开回起点：开，回到 %02u:%02u", cs/60, cs%60]
                     duration:1.2 finishHandler:^{}];
     }
     [self refresh];

@@ -69,6 +69,19 @@
 #define XRC_JUDGE_SLOT_OFF          (0x164AB28ULL)
 #define XRC_INFO_OFF                (0x164AB40ULL)   // slot + 24
 
+// ---------------- retry 触发链（循环重建，2026-09-10） ----------------
+// 出处: research/notes/ios-7.0.255-replay-chain.md §11（retry 三层链路）
+// 暂停菜单 Retry 回调核心 = triggerAction(GameModel, action=13, 1, 0, 0)：
+//   sub_100B69644(GameModel, 0xD, 1, 0, 0) → sub_100B677A8 查 action 名表
+//   → executor(*(GameModel+0x280))->vtable[14](name, rest, …) 完整重建场景。
+// GameModel = *(*(qword_101673DD8) + 0x10)；qword_101673DD8 = 全局服务定位器
+// （score-lifecycle 审计旁注 A.5：+0x10 存档/IAP、+0x20 账号/st3、+0x48 网络）。
+// 从插件直接调 triggerAction 属实验路径（暂停态是否为前置条件待真机验证）；
+// 失败降级 = 超时解冻 + 用户手动 retry（音频回跳检测）。
+#define XRC_OFF_SERVICE_LOCATOR     (0x1673DD8ULL)  // qword_101673DD8
+#define XRC_OFF_ACTION_TRIGGER      (0xB69644ULL)   // sub_100B69644
+#define XRC_ACTION_RETRY            (13)            // action id（0xD）
+
 // note 字段（改判 handler 读；replay-chain 笔记 §3.2）
 #define XRC_NOTE_TYPE_OFF           28
 #define XRC_NOTE_TIME_OFF           24

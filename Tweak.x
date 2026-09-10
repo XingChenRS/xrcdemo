@@ -1,6 +1,6 @@
 // xrc-arcdemo / Tweak.x — bootstrap + 悬浮 UI。
 // 游戏逻辑全部在 XRC* 模块；交互全部在 XRCPracticePanel（ArcCreate 同构）。
-#define XRC_TWEAK_VERSION  @"v8.9.5"
+#define XRC_TWEAK_VERSION  @"v8.9.6"
 #define XRC_BUILD_LABEL    @"Sideload"
 // 构建号：CI 生成 xrc_build_stamp.h（commit sha + 时间）；本地构建回退 "dev"。
 // 日志首行打印——用于确认实际装配的版本，杜绝版本混淆。
@@ -204,6 +204,7 @@ static void doBootstrap(void) {
             void *p = xrc_player_get();
             if (xrc_player_detect_change(p)) {
                 acc_flog(@"new song: player=%p", p);
+                xrc_loop_reset_all();   // 退出重进 = 练习状态归零（retry 不经过这里）
             }
             if (p) {
                 xrc_player_try_capture_length(p);

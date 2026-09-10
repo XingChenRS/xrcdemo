@@ -2,6 +2,31 @@
 
 ArcDemo 演进记录。能力状态标记与 [xrc 能力账本](../../research/notes/xrc-arcaea-capability-ledger-2026-08-31.md) 对齐（XRC-R 运行中 / XRC-V 已验证 / XRC-S 静态闭环 / PROTO 失败原型 / OPEN 未闭合）。
 
+## 2026-09-10 — v8.9.6：循环 = 到 B 自动重建场景（triggerAction retry）+ 面板中文化
+
+**用户定案**：循环练习 = 到 B 点自动"完整重建场景"（等同暂停菜单 retry 的效果），
+重建后从 A 点续播——而不是旧版的"seek 平移到 A（音符不重现）"。
+
+**实现（XRCGameplay.m 自动重建状态机）**：
+- 到 B → `xrc_clock_freeze_inc()`（对齐游戏暂停语义）→ 100ms → 程序化调用
+  `triggerAction(GameModel, action=13, 1, 0, 0)`（= 暂停菜单 Retry 的同一函数，
+  `sub_100B69644`；GameModel = `*(*(qword_101673DD8)+0x10)`）。
+- 新场景出现（scene 指针变化）→ pending seek 回 A（新场景首帧执行）→ 解冻。
+- 失败降级：2s 超时（trigger 无效）→ 解冻 + 日志；手动 retry 仍经音频回跳回 A。
+- 换歌（player 指针变化）→ `xrc_loop_reset_all()` 清练习状态；retry 不触发（同一播放器）。
+- 循环卡死恢复仅在 IDLE 状态生效（重建期间不抢执行）。
+
+**面板交互重排（用户按玩家视角定）**：
+- `起点` = 当前播放位置为 A（清旧终点，弹"待设终点"提示）；`终点` = 当前播放位置为 B
+  （需先设起点，To≥A+1s）；`循环 开/关` 仅负责开关（区间不完整置灰）。
+- 按钮动态显示时间（`起点 01:23` / `终点 02:10`）。
+- 时间轴**双指框选已移除**（用户：精度太低）；拖拽 = 纯 seek 预览。
+- 全部 UI 中文化 + 顶部 tips 行 + 大字号（15pt）。
+- 新增偏移进 profile：`XRC_OFF_SERVICE_LOCATOR`/`XRC_OFF_ACTION_TRIGGER`/`XRC_ACTION_RETRY`。
+
+**注意**：`triggerAction` 直调是实验路径（暂停态是否前置待真机验证）；日志会打
+`loop auto-retry: ...` 全链。若触发无效会看到 `TIMEOUT` 并自动解冻（安全）。
+
 ## 2026-09-10 — v8.9.5：retry 监视改确定性（音频回跳）+ retry 重建链逆向落笔
 
 **决策（用户问「直调场景重置 vs 手动 retry + 跳转」）**：保留游戏自己的 retry——它走

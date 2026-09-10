@@ -105,8 +105,13 @@ static void s_retry_watch_tick(void) {
     int32_t jump = pos - s_prev_audio_ms;
     s_prev_audio_ms = pos;
     if (jump < XRC_RETRY_AUDIO_JUMP_MS) {
-        uint32_t target = atomic_load(&s_capture_ms);
-        if (xrc_gameplay_request(XRC_OP_SEEK, target)) {
+        // 手动 retry 回位点：循环开启时 = A 点；否则 = capture 点（Reset on Retry）。
+        uint32_t a = 0, b = 0;
+        xrc_loop_get_range(&a, &b);
+        uint32_t target = 0;
+        if (xrc_loop_get_enabled() && b > a + 1000) target = a;
+        else target = atomic_load(&s_capture_ms);
+        if (target && xrc_gameplay_request(XRC_OP_SEEK, target)) {
             atomic_fetch_add(&s_retry_armed_gen, 1);
             acc_flog(@"retry detected (audio jump %d) -> queued seek %u", jump, target);
         }
@@ -296,7 +301,8 @@ void xrc_gameplay_update(void *self, uint64_t a2, uint64_t a3, uint64_t a4, uint
             } else if (s_stall_since && now_us - s_stall_since > 1500000ULL) {
                 uint32_t a = 0, b = 0;
                 xrc_loop_get_range(&a, &b);
-                if (xrc_loop_get_enabled() && pos < (int32_t)b - 200) {
+                if (xrc_loop_get_enabled() && pos < (int32_t)b - 200
+                    && atomic_load(&s_ar_state) == XRC_AR_STATE_IDLE) {
                     if (xrc_gameplay_request(XRC_OP_LOOP_REWIND, a))
                         acc_flog(@"loop stall at %d -> forced rewind to %u", pos, a);
                 }
@@ -362,7 +368,27 @@ void xrc_seek_ms(uint32_t ms) {
     xrc_clock_freeze_dec();
 }
 
-#pragma mark - 循环/转场状态（分 profile）
+#pragma mark - 循环 / 自动重建（玩法语义说明）
+
+/*
+ * 玩法定义（2026-09-10 与用户闭合）：
+ *
+ * 【A-B 循环练习】
+ *   用户流程：播放到起点按「起点」→ 播放到终点按「终点」→ 开「循环」。
+ *   到 B 点后：冻结时间域（对齐游戏暂停语义）→ 100ms 后程序化触发
+ *   triggerAction(retry)（= 暂停菜单 Retry 的同一函数，完整重建场景）
+ *   → 新场景首帧 seek 回 A → 解冻。判定计数/连击随重建自然归零。
+ *   失败降级：2s 内未见新场景（trigger 无效）→ 解冻 + 日志，用户手动
+ *   retry 仍会经音频回跳检测回到 A。
+ *
+ * 【退出重进 vs retry 的区别】
+ *   换歌/退出重进 = 播放器实例更换（player 指针变化）→ xrc_loop_reset_all()
+ *   清空练习状态。retry = 同一播放器、场景重建 → 状态保留，正好用于循环。
+ *
+ * 【手动 retry 回位】
+ *   循环开启时回 A 点；否则回「重开回起点」记录的目标（Reset on Retry）。
+ *   检测依据 = 音频位置帧间回跳 > 10s（retry 重建的必然特征）。
+ */
 
 // replay 定案（2026-09-10）：不再直调转场函数（sub_100CA9590 会读旧场景
 // note_group → UAF，已两次真机崩溃）。改为 seek 平移路线——音频 seek +
@@ -401,26 +427,104 @@ bool xrc_transition_resume(void *gameplay, bool resume) {
 
 bool xrc_loop_get_enabled(void) { return atomic_load(&s_loop_enabled); }
 void xrc_loop_set_range(uint32_t a_ms, uint32_t b_ms) {
-    // ArcCreate 夹取语义：To >= From + 1000；非法值视为关闭
-    if (b_ms <= a_ms + 1000) {
-        atomic_store(&s_loop_a, 0);
-        atomic_store(&s_loop_b, 0);
-        atomic_store(&s_loop_enabled, false);
-        return;
-    }
+    // 2026-09-10 交互重构：设定区间**不再自动启用**（面板流程：设起点→设终点→开循环）。
+    // 区间合法性（b >= a+1000）在 tick 时检查。
     atomic_store(&s_loop_a, a_ms);
     atomic_store(&s_loop_b, b_ms);
-    atomic_store(&s_loop_enabled, true);
+}
+void xrc_loop_set_enabled(bool on) {
+    uint32_t a = atomic_load(&s_loop_a), b = atomic_load(&s_loop_b);
+    if (on && b <= a + 1000) return;   // 区间不完整不允许开启
+    atomic_store(&s_loop_enabled, on);
+    acc_flog(@"loop %s (A=%u B=%u)", on ? "ON" : "OFF", a, b);
+}
+// 换歌（退出重进）→ 练习状态归零。retry 不改 player 指针，不会走到这里。
+void xrc_loop_reset_all(void) {
+    atomic_store(&s_loop_enabled, false);
+    atomic_store(&s_loop_a, 0);
+    atomic_store(&s_loop_b, 0);
+    xrc_gameplay_set_resume_ms(0);
+    acc_flog(@"practice state cleared (song change)");
 }
 void xrc_loop_get_range(uint32_t *from_ms, uint32_t *to_ms) {
     if (from_ms) *from_ms = atomic_load(&s_loop_a);
     if (to_ms)   *to_ms   = atomic_load(&s_loop_b);
 }
+// ---- 自动重建状态机（到 B → 冻结 → triggerAction(retry) → 新场景 seek 回 A）----
+// 语义依据：retry = 游戏自身"销毁旧场景→完整重建"链路（replay-chain §11），
+// 重建后音频/判定天然从头；配合 + 我们注入 seek 到 A = 真正的循环练习。
+// 失败降级链：triggerAction 无效（无暂停态前置？）→ 2s 超时 → 解冻 + 日志，
+// 用户手动 retry 仍能回 A（音频回跳检测）。
+#define XRC_AR_STATE_IDLE     0
+#define XRC_AR_STATE_FREEZE   1   // 已冻结，等 N 帧再触发（对齐暂停态）
+#define XRC_AR_STATE_TRIGGER  2   // 已触发，等新场景出现
+static _Atomic(uint32_t) s_ar_state = XRC_AR_STATE_IDLE;
+static _Atomic(uint64_t) s_ar_stamp_us = 0;
+static _Atomic(uint64_t) s_ar_scene_before = 0;
+static _Atomic(uint32_t) s_ar_target_a = 0;
+
+static void s_ar_trigger_retry(void) {
+    extern uint64_t xrc_image_base(void);
+    uint64_t base = xrc_image_base();
+    if (!base) return;
+    uint64_t locator = *(uint64_t *)(base + XRC_OFF_SERVICE_LOCATOR);
+    if (!locator) { acc_flog(@"auto-retry: service locator null"); return; }
+    uint64_t game_model = *(uint64_t *)(locator + 0x10);
+    if (!game_model) { acc_flog(@"auto-retry: game model null"); return; }
+    void (*trigger)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) =
+        (void (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t))
+        (base + XRC_OFF_ACTION_TRIGGER);
+    trigger(game_model, XRC_ACTION_RETRY, 1, 0, 0);
+    acc_flog(@"auto-retry: triggerAction(13) sent (gm=%p)", (void *)game_model);
+}
+
 void xrc_loop_tick(void *gameplay, uint32_t pos_ms) {
-    if (!atomic_load(&s_loop_enabled)) return;
-    if (pos_ms >= atomic_load(&s_loop_b)) {
-        // 循环回到 A：deferred 执行（复用状态机，保证在活场景内跑）
-        xrc_gameplay_request(XRC_OP_LOOP_REWIND, atomic_load(&s_loop_a));
+    uint32_t st = atomic_load(&s_ar_state);
+    uint64_t now = xrc_real_now_us();
+
+    if (st == XRC_AR_STATE_IDLE) {
+        if (!atomic_load(&s_loop_enabled)) return;
+        uint32_t b = atomic_load(&s_loop_b);
+        if (pos_ms >= b && b > atomic_load(&s_loop_a) + 1000) {
+            // 到 B：冻结（对齐游戏暂停语义）→ 延迟 100ms → 触发 retry
+            xrc_clock_freeze_inc();
+            atomic_store(&s_ar_target_a, atomic_load(&s_loop_a));
+            atomic_store(&s_ar_scene_before, (uint64_t)gameplay);
+            atomic_store(&s_ar_stamp_us, now);
+            atomic_store(&s_ar_state, XRC_AR_STATE_FREEZE);
+            acc_flog(@"loop auto-retry: freeze at %u (A=%u)", pos_ms,
+                     atomic_load(&s_loop_a));
+        }
+        return;
+    }
+
+    if (st == XRC_AR_STATE_FREEZE) {
+        if (now - atomic_load(&s_ar_stamp_us) < 100000ULL) return;
+        s_ar_trigger_retry();
+        atomic_store(&s_ar_stamp_us, now);
+        atomic_store(&s_ar_state, XRC_AR_STATE_TRIGGER);
+        return;
+    }
+
+    if (st == XRC_AR_STATE_TRIGGER) {
+        uint64_t before = atomic_load(&s_ar_scene_before);
+        if ((uint64_t)gameplay != before) {
+            // 新场景已出现：排队 seek 回 A（pending 绑定新场景，下一帧执行），解冻
+            uint32_t a = atomic_load(&s_ar_target_a);
+            xrc_clock_freeze_dec();
+            if (xrc_gameplay_request(XRC_OP_LOOP_REWIND, a))
+                acc_flog(@"loop auto-retry: new scene -> rewind to %u", a);
+            else
+                acc_flog(@"loop auto-retry: rewind request rejected (a=%u)", a);
+            atomic_store(&s_ar_state, XRC_AR_STATE_IDLE);
+            return;
+        }
+        if (now - atomic_load(&s_ar_stamp_us) > 2000000ULL) {
+            // 2s 超时：triggerAction 未生效 → 解冻，退化为旧行为（等手动 retry）
+            xrc_clock_freeze_dec();
+            atomic_store(&s_ar_state, XRC_AR_STATE_IDLE);
+            acc_flog(@"loop auto-retry: TIMEOUT (trigger ineffective) - unfroze");
+        }
     }
 }
 

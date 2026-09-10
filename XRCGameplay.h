@@ -55,6 +55,10 @@ bool xrc_transition_resume(void *gameplay, bool resume);
 // A-B 循环状态：From/To（ms）与启用标志（ArcCreate 语义：To >= From+1000）。
 bool xrc_loop_get_enabled(void);
 void xrc_loop_set_range(uint32_t from_ms, uint32_t to_ms);
+// 启用/停用循环（2026-09-10：区间与启用分离；区间不完整时开启无效）。
+void xrc_loop_set_enabled(bool on);
+// 换歌（退出重进）→ 练习状态归零（清循环与 retry 回位）。retry 不触发此函数。
+void xrc_loop_reset_all(void);
 void xrc_loop_get_range(uint32_t *from_ms, uint32_t *to_ms);   // 任一可为 NULL
 // gp.update 内部调用（7.0 转场版本才有实现）。
 void xrc_loop_tick(void *gameplay, uint32_t pos_ms);
