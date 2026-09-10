@@ -312,7 +312,42 @@ def find_dylibs() -> list[str]:
     return found
 
 
+def check_binary(path: str) -> int:
+    """--check：报告任意 Arc-mobile 的桩/注入状态（签名前后都可自查）。"""
+    raw = bytearray(open(path, "rb").read())
+    base = fat_arm64_slice_offset(raw)
+    entry = bytes(raw[base + STUB_ENTRY_FILE:base + STUB_ENTRY_FILE + 12])
+    tramp = struct.unpack_from("<10I", raw, base + STUB_TRAMP_FILE)
+    has_dylib = has_load_dylib(raw, base, INJECT_NAME)
+    has_stub = entry[:4] != STUB_ENTRY_EXPECT[:4]
+    stub_v2 = tramp[4] == 0xAA0603E3
+    slot = struct.unpack_from("<QQQ", raw, base + STUB_SLOT_FILE) if has_stub else None
+    ok = True
+    print(f"file       : {path}")
+    print(f"entry      : {'PATCHED (ADRP/ADD/BR)' if has_stub else 'original (STP ...)'}")
+    print(f"trampoline : {'v2 (MOV X3,X6 present)' if stub_v2 else 'v1 or absent'}")
+    print(f"slot       : {slot if slot else '-'}")
+    print(f"dylib LC   : {'@rpath/libArcDemo.dylib present' if has_dylib else 'MISSING'}")
+    if has_stub and not has_dylib:
+        print("=> INVALID: stub without dylib (features would be dead)")
+        ok = False
+    if has_stub and not stub_v2:
+        print("=> STALE: v1 trampoline — new handler needs v2 (MOV X3,X6); regenerate stub")
+        ok = False
+    if has_stub and stub_v2 and has_dylib:
+        print("=> OK: stub v2 + dylib — judge feature should report live on device")
+    if not has_stub:
+        print("=> NOT PATCHED: this main carries no stub (judge feature unavailable)")
+    return 0 if ok else 2
+
+
 def main():
+    if "--check" in sys.argv:
+        i = sys.argv.index("--check")
+        if i + 1 >= len(sys.argv):
+            print("usage: inject.py --check <Arc-mobile path>")
+            sys.exit(1)
+        sys.exit(check_binary(sys.argv[i + 1]))
     do_stub = "--stub" in sys.argv
     if not os.path.isfile(MAIN):
         print(f"[!] main not found: {MAIN}")
@@ -364,6 +399,22 @@ def main():
     if size < sl_end - 1000:
         print("[!] WARNING: file smaller than slice - possible corruption")
         sys.exit(1)
+
+    # 组合守卫（2026-09-10 教训）：打桩的二进制必须同时载入 dylib，否则
+    # 跳板会把判定核转发给 slot（handler=0 → 直通）——游戏能玩但功能全无；
+    # 反向（载入 dylib 但没打桩）则由 dylib 侧降级（judge 区禁用）。
+    with open(MAIN, "rb") as f:
+        final = bytearray(f.read())
+    fbase = fat_arm64_slice_offset(final)
+    has_dylib = has_load_dylib(final, fbase, INJECT_NAME)
+    # 打桩判据 = 入口首 4 字节已不是原始 STP（被 12 字节 ADRP/ADD/BR 覆盖）
+    has_stub = bytes(final[fbase + STUB_ENTRY_FILE:fbase + STUB_ENTRY_FILE + 4]) != STUB_ENTRY_EXPECT[:4]
+    print(f"[i] combination check: dylib={has_dylib} stub={has_stub}")
+    if has_stub and not has_dylib:
+        print("[!] INVALID COMBINATION: stub patched but LC_LOAD_DYLIB missing —")
+        print("    the judge trampoline would dispatch to a NULL handler (features dead).")
+        print("    Re-run without --stub for a clean injection, or keep both.")
+        sys.exit(2)
 
 
 if __name__ == "__main__":

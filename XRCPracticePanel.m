@@ -350,12 +350,20 @@
         tf.enabled = judgeOK;
         tf.alpha = judgeOK ? 1.0 : 0.5;
     }
-    self.judgeHdr.text = judgeOK
-        ? @"Judgement window +/-ms (Max/Pure/Far/Lost)"
-        : @"Judgement: stub inactive (binary not patched)";
+    // 诊断分级：明确区分"没桩 / 旧跳板 / handler 未装"三种失败（2026-09-10 教训：
+    // 含糊的 "binary not patched" 无法定位是主程序没打桩还是打了旧桩）。
+    if (judgeOK) {
+        self.judgeHdr.text = @"Judgement window +/-ms (Max/Pure/Far/Lost)";
+    } else if (!g_caps.stub_present) {
+        self.judgeHdr.text = @"Judgement: main binary NOT patched (dylib-only?)";
+    } else if (!g_caps.stub_v2) {
+        self.judgeHdr.text = @"Judgement: stale v1 stub — regenerate (inject.py --stub)";
+    } else {
+        self.judgeHdr.text = @"Judgement: handler not installed (check log)";
+    }
     self.capsLabel.text = [NSString stringWithFormat:
-        @"caps: stub=%d judge=%d gp=%d mtp=%d replay=%d",
-        g_caps.stub_present, g_caps.judge_handler_live,
+        @"caps: stub=%d v2=%d judge=%d gp=%d mtp=%d replay=%d",
+        g_caps.stub_present, g_caps.stub_v2, g_caps.judge_handler_live,
         g_caps.gp_hook_live, g_caps.mtp_hook_live, g_caps.replay_available];
     self.capsLabel.textColor = judgeOK
         ? [UIColor colorWithWhite:0.7 alpha:1.0]
