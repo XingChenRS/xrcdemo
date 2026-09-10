@@ -69,28 +69,16 @@
 #define XRC_JUDGE_SLOT_OFF          (0x164AB28ULL)
 #define XRC_INFO_OFF                (0x164AB40ULL)   // slot + 24
 
-// ---------------- retry 触发链（循环重建，2026-09-10） ----------------
-// 出处: research/notes/ios-7.0.255-replay-chain.md §11（retry 三层链路）
-// 暂停菜单 Retry 回调核心 = triggerAction(GameModel, action=13, 1, 0, 0)：
-//   sub_100B69644(GameModel, 0xD, 1, 0, 0) → sub_100B677A8 查 action 名表
-//   → executor(*(GameModel+0x280))->vtable[14](name, rest, …) 完整重建场景。
-// GameModel = *(*(qword_101673DD8) + 0x10)；qword_101673DD8 = 全局服务定位器
-// （score-lifecycle 审计旁注 A.5：+0x10 存档/IAP、+0x20 账号/st3、+0x48 网络）。
-// 从插件直接调 triggerAction 属实验路径（暂停态是否为前置条件待真机验证）；
-// 失败降级 = 超时解冻 + 用户手动 retry（音频回跳检测）。
-#define XRC_OFF_SERVICE_LOCATOR     (0x1673DD8ULL)  // qword_101673DD8
-#define XRC_OFF_ACTION_TRIGGER      (0xB69644ULL)   // sub_100B69644
-#define XRC_ACTION_RETRY            (13)            // action id（0xD）
-// 暂停层工厂（sub_100BACD34(delegate, gameModel, style)）+ 暂停完成例程
-// （sub_100947C20(pauseLayer)，内容 = 游戏点 Retry 时序列的第①步）：
-// 程序化 retry = 构造 PauseLayer(delegate=当前场景, gm=全局单例, style) →
-// sub_100947C20(pauseLayer) → 游戏自己的重建链。delegate 传场景经
-// vtable 槽 172（sub_100CA762C → sub_100CA7538）转场景自身（this-680）。
-// ⚠ 已停用（2026-09-10 v8.9.9）：程序化 retry 三次尝试均失败且最后一次
-// 污染 action 队列致手动 retry 卡死（见 DEVLOG v8.9.6/7/8 与 replay 笔记 §11）。
-// 偏移保留仅作研究记录，代码不得再调用。
-#define XRC_OFF_PAUSE_FACTORY       (0xBACD34ULL)   // sub_100BACD34（停用）
-#define XRC_OFF_PAUSE_SETUP         (0x947C20ULL)   // sub_100947C20（停用）
+// ---------------- retry 触发链（研究记录；**已停用，禁止调用**） ----------------
+// 出处: research/notes/ios-7.0.255-replay-chain.md §11（retry 三层链路逆向）
+// 结论（2026-09-10，三次真机尝试）：程序化 retry 不可行——直调
+// triggerAction(GameModel, 13, 1) 及"建暂停层+推进度"组合全部被游戏静默
+// 忽略（Retry 回调首校验 PauseLayer+0x298==1），且重复触发会污染 GameModel
+// action 队列，导致玩家手动 retry 卡死在转场界面（v8.9.8 实测）。
+// 相关偏移（qword_101673DD8 服务定位器 +0x10=GameModel、sub_100B69644
+// 触发函数、sub_100BACD34/sub_100947C20 暂停层工厂与 setup）**不落入 profile**
+// ——此处只留研究指针，代码不得引用。手动 retry 由玩家操作，插件仅做
+// "音频回跳检测 → 回循环 A"（见 XRCGameplay.m retry watchdog）。
 
 // note 字段（改判 handler 读；replay-chain 笔记 §3.2）
 #define XRC_NOTE_TYPE_OFF           28
