@@ -1,17 +1,3 @@
-- (void)toggleRepeat {
-    if (xrc_loop_get_enabled()) {
-        xrc_loop_set_enabled(false);
-    } else {
-        uint32_t from = 0, to = 0;
-        xrc_loop_get_range(&from, &to);
-        if (to <= from + 1000) {
-            [WHToast showMessage:@"请先设置循环起点和终点" duration:1.4 finishHandler:^{}];
-            return;
-        }
-        xrc_loop_set_enabled(true);
-    }
-    [self refresh];
-}
 // XRCPracticePanel.m — ArcCreate 同构练习面板实现。
 // 交互对齐 external/ArcCreate Assets/Scripts/Gameplay/Audio/Practice/：
 //   PracticeTimeline（点击/拖动 = seek + 循环区间可视化）
@@ -568,16 +554,15 @@
 
 - (void)toggleRepeat {
     if (xrc_loop_get_enabled()) {
-        xrc_loop_set_range(0, 0);
+        xrc_loop_set_enabled(false);
     } else {
         uint32_t from = 0, to = 0;
         xrc_loop_get_range(&from, &to);
-        if (to <= from) {   // 未设置过 → 默认当前→曲末
-            from = xrc_player_position_ms();
-            to = xrc_player_song_length_ms();
-            if (to <= from + 1000) to = from + 1000;
+        if (to <= from + 1000) {
+            [WHToast showMessage:@"请先设置循环起点和终点" duration:1.4 finishHandler:^{}];
+            return;
         }
-        xrc_loop_set_range(from, to);
+        xrc_loop_set_enabled(true);
     }
     [self refresh];
 }
