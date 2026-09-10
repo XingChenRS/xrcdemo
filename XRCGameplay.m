@@ -72,6 +72,24 @@ static void *s_valid_note_group(void *scene) {
     return ng;
 }
 
+// ---- retry 监视器（2026-09-10）----
+// 用户需求：在游戏暂停菜单 retry 后自动跳回练习起点（循环区间 A / 上次 seek 目标）。
+// 不做 retry 按钮逆向——用**时钟跳变检测**：retry 后谱面钟从近曲尾跌回曲首，
+// 帧间跳变 > 1s 即判为 retry（倒带回绕同理，恰好是期望行为）。
+// 一次性哨兵：只响应一次，然后解除（用户手动拖走不会被反复拉回）。
+#define XRC_RETRY_SEEK_JUMP_MS   5000    // 倒带判定阈值（帧间负跳变）
+static _Atomic(uint32_t) s_resume_ms = 0;      // 0 = 无监视
+static _Atomic(bool)     s_last_valid = false;
+static int32_t           s_last_pos = 0;
+static _Atomic(uint64_t) s_resume_fired_us = 0;
+
+void xrc_gameplay_set_resume_ms(uint32_t ms) {
+    atomic_store(&s_resume_ms, ms);
+    atomic_store(&s_last_valid, false);        // 重新基准，避免陈旧跳变误触发
+    acc_flog(@"resume watch armed: %u ms", ms);
+}
+uint32_t xrc_gameplay_get_resume_ms(void) { return atomic_load(&s_resume_ms); }
+
 // 在游戏循环内执行 pending（self = 当前活场景）。
 static void s_exec_pending(void *self) {
     uint32_t op = atomic_load(&s_pending_op);
@@ -143,24 +161,6 @@ static void s_exec_pending(void *self) {
         acc_flog(@"replay executed via seek (op=%u)", op);
     }
 }
-
-// ---- retry 监视器（2026-09-10）----
-// 用户需求：在游戏暂停菜单 retry 后自动跳回练习起点（循环区间 A / 上次 seek 目标）。
-// 不做 retry 按钮逆向——用**时钟跳变检测**：retry 后谱面钟从近曲尾跌回曲首，
-// 帧间跳变 > 1s 即判为 retry（倒带回绕同理，恰好是期望行为）。
-// 一次性哨兵：只响应一次，然后解除（用户手动拖走不会被反复拉回）。
-#define XRC_RETRY_SEEK_JUMP_MS   5000    // 倒带判定阈值（帧间负跳变）
-static _Atomic(uint32_t) s_resume_ms = 0;      // 0 = 无监视
-static _Atomic(bool)     s_last_valid = false;
-static int32_t           s_last_pos = 0;
-static _Atomic(uint64_t) s_resume_fired_us = 0;
-
-void xrc_gameplay_set_resume_ms(uint32_t ms) {
-    atomic_store(&s_resume_ms, ms);
-    atomic_store(&s_last_valid, false);        // 重新基准，避免陈旧跳变误触发
-    acc_flog(@"resume watch armed: %u ms", ms);
-}
-uint32_t xrc_gameplay_get_resume_ms(void) { return atomic_load(&s_resume_ms); }
 
 // ---- vtable swizzle（PAC 感知）----
 int xrc_swizzle_vtable(uint64_t vtable_addr, uint64_t orig_fn_off, void *new_fn, void **out_orig) {
