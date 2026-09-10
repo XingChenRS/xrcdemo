@@ -87,7 +87,9 @@ static int s_apply_thresholds(uint64_t image_base) {
         uint32_t *p = (uint32_t *)site;
         uint32_t orig = *p;
         *p = s_remake_cmp(orig, want[i]);
-        __builtin___clear_cache((char *)site, (char *)(site + 4));
+        // 指令缓存同步（避免 ___clear_cache 符号依赖：用 sys_icache_invalidate）
+        extern void sys_icache_invalidate(void *, size_t);
+        sys_icache_invalidate((void *)site, 4);
         mprotect((void *)page, 0x4000, PROT_READ | PROT_EXEC);
         atomic_store(&s_applied[i], want[i]);
         written++;
