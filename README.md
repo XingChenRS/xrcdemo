@@ -1,89 +1,75 @@
-# xrcdemo（xrc · runtime-ios）
+# xrcdemo
 
-Arcaea iOS 侧载 dylib：无越狱运行时插件。xrc 工作区 `projects/runtime-ios/` 层的活跃项目。
+Arcaea iOS 侧载运行时插件：无需越狱，为游戏提供练习向的运行时改造能力。
 
-> 仓库：`XingChenRS/xrcdemo`（新仓单提交发布；本仓 = 旧 ArcDemo 的规范化重构）
 > 版本：**beta1.0**（2026-09-10）
-> 基线版本：**Arcaea iOS 7.0.255**
-> 证据与能力状态：**以 xrc 工作区 `research/notes/` 为准**——本仓库只含实现与门面文档。
-> 判定链/时钟/音频链/retry 链的逆向出处、6.13 × 7.0 锚点对照，均为工作区笔记
-> （不在本仓内）：`arcdemo-crossversion-anchors-6.13-vs-7.0.255.md`、
-> `arcaea-6.13.10-capability-inventory.md`、`ios-7.0.255-judgement-correction-2026-09-10.md` 等。
+> 基线：**Arcaea iOS 7.0.255**（当前示例版本；跨版本适配见 §4）
 
 ## 1. 功能
 
-| 功能 | 状态 | 实现层 | 说明 |
-|---|---|---|---|
-| **Seek（任意时刻跳转）** | 已实现/真机验证 | 外置 dylib | 拖动进度条或 ±5s：音频 seek + 谱面钟基准平移，从目标时刻继续播放。已判定音符**不重现**、计分不回滚（练习定位语义） |
-| **循环片段播放** | 已实现/真机验证 | 外置 dylib | 面板设「起点」/「终点」后开启循环：到终点自动跳回起点往复。**注意**：已判定段落需**手动暂停 → Retry** 才能重新游玩（判定计数随重建归零）；Retry 后插件会自动跳回循环起点并继续。插件对 Retry 的检测 = 音频位置回跳（循环开启时生效） |
-| **变速** | 已实现/真机验证 | 外置 dylib | 改变谱面事件流速（0.05×–2.0×），**音频速度不变**。原理：每帧 hook `gp.update` 平移谱面时钟基准 + `gettimeofday` 时间域注入 |
-| **改判** | 已实现/真机验证 | **主程序插桩 + dylib** | 判定窗口四档任意调整（默认 25/50/100/120ms）。依赖二进制插桩：`inject.py` 把 trampoline 写入主程序 `__TEXT` 尾部空白页并覆盖判定核入口；**无越狱下修改 iOS 运行时 `__TEXT` 不可行（CT/PAC 拒绝），插桩发生在打包签名前**——这是本功能必须侵入主程序的原因 |
+| 功能 | 实现层 | 说明 |
+|---|---|---|
+| **Seek** | 外置 dylib | 跳变到谱面的任意时刻，并从该时刻开始播放（音频 seek + 谱面钟基准平移）。已判定音符**不重现**、计分不回滚 |
+| **循环片段播放** | 外置 dylib | 锁定时钟在特定区间：到终点自动跳回起点往复。**注意**：已判定段落需**手动暂停 → Retry** 才能重新游玩（判定计数随场景重建归零）；插件会在 Retry 后**自动跳转到循环起始点并继续播放**。Retry 检测 = 音频位置回跳（循环开启时生效）。**如需更换曲目使用该功能，请先点「重置循环」重置循环区段** |
+| **变速** | 外置 dylib | 改变谱面事件的流速（0.05×–2.0×），但**不改变音频速度**。原理：每帧平移谱面时钟基准 + 时间域注入 |
+| **改判** | **主程序插桩 + dylib** | 判定窗口四档动态调整（默认 25/50/100/120ms）。依赖二进制插桩：将 trampoline 放入主程序空白页，**以在无越狱的情况下修改 iOS 程序的运行时 text 段**。插桩在打包签名前完成；无越狱时运行时直接改写 `__TEXT` 不可行（CT/PAC 页签名拒绝）——这是本功能必须侵入主程序的原因 |
 
 ## 2. 使用
 
 ### 安装（侧载）
 
-1. 用 `inject.py --stub` 对原始 `Arc-mobile` 打桩（写入跳板 + slot + info blob），产出打桩主程序；
+1. 用 `inject.py --stub` 对原始 `Arc-mobile` 打桩（写入跳板 + slot + info blob，产出打桩主程序）；
 2. 将 `libxrcdemo.dylib` 与 `libellekit.dylib` 放入 `Payload/Arc-mobile.app/Frameworks/`；
-3. 重签名并安装；
-4. 验证：日志首行出现 `==== xrcdemo beta1.0 build <stamp>`，且 `[probe] summary: stub=1 judge=1 gp=1 mtp=1`。
+3. 重签名并安装。
 
-### 面板
+验证：日志首行 `==== xrcdemo beta1.0 build <stamp> ====`，以及 `[probe] summary: stub=1 judge=1 gp=1 mtp=1`。
 
-- **单击悬浮球**开/关练习面板（可拖动位置）。
+### 练习面板
+
+- **单击悬浮球**开/关面板（可拖动位置）。
 - **时间轴**：单击/拖动 = seek（松手执行）。
-- **循环**：`起点`（取当前播放位置）→ 播放到终点 → `终点` → `循环 开`。面板右上角 `重置循环` 清除区间（唯一的清除入口；换歌/Retry 都不会动它）。
+- **循环**：`起点`（取当前播放位置）→ 播放到终点 → `终点` → `循环 开`；`重置循环` 清除区间（唯一的清除入口）。
 - **速度**：滑杆 0.05×–2.0×，snap 0.05。
 - **判定窗口**：Max/Pure/Far/Lost 四档（毫秒），输入后立即生效（需主程序已打桩）。
 
-### 日志
-
-`Documents/xrcdemo.log`（同时走 NSLog 前缀 `[xrcdemo]`）。配置：`Documents/xrcdemo.plist`。
+日志：`Documents/xrcdemo.log`。配置：`Documents/xrcdemo.plist`。
 
 ## 3. 架构
 
 ```
-┌─ dylib（跨版本逻辑不变）────────────────────────────┐
+┌─ dylib（版本无关逻辑）──────────────────────────────┐
 │  Tweak.x         bootstrap + 悬浮球/面板挂接          │
-│  XRCClock.m      时间域（真实时间单一实现 + warp/freeze）│
-│  XRCPlayer.m     音频（registry/player/进度/曲长/seek） │
-│  XRCGameplay.m   gp.update hook + retime + seek + 循环 │
+│  XRCClock.m      时间域（真实时间 + warp/freeze）      │
+│  XRCPlayer.m     音频（player/进度/曲长/seek）         │
+│  XRCGameplay.m   每帧 hook + 时钟平移 + seek + 循环    │
 │  XRCJudge.m      改判 handler（slot 注册 + 判定复刻）   │
 │  XRCConfig.m     plist 配置                          │
-│  XRCFloatButton.m / XRCPracticePanel.m    UI          │
-│  XRCProbe.m      运行时能力探针（日志自证）             │
-│  XRCLog.h        统一日志（xrc_log）                  │
+│  XRCProbe.m      运行时探针（启动日志自证各 hook 状态）  │
+│  XRCFloatButton.m / XRCPracticePanel.m      UI        │
 ├─ 版本契约（跨版本唯一改动点）─────────────────────────┤
-│  XRCProfile.h    偏移/vtable 槽/字段布局（每项带出处）   │
+│  XRCProfile.h    偏移 / vtable 槽 / 字段布局（带出处注释）│
 │  xrc_abi.h       slot 布局 + info blob + handler 签名  │
-├─ 注入器（inject.py，与 profiles 对齐）───────────────┤
-│  dylib 打包 + LC_LOAD_DYLIB 注入（现有 load command 填充内）│
-│  改判桩：跳板 v2（40B）+ slot v2（24B）+ info blob（120B）│
+├─ 注入器（inject.py）────────────────────────────────┤
+│  dylib 打包 + LC_LOAD_DYLIB 注入                     │
+│  改判桩：跳板 40B + slot 24B + info blob 120B         │
 └──────────────────────────────────────────────────┘
 ```
 
-**原则**：跨版本只改 `XRCProfile.h`；逻辑文件全部版本无关。侵入主二进制的**唯一**理由是改判（判定核是直接 BL 调用，无间接层可用）。
+侵入主二进制的**唯一**理由是改判：判定核是直接 BL 调用，无间接层可用；dylib 与主程序通过 slot（跳板分发）配合。
 
-**两种已证伪/放弃的路线**（防止复活，详见 DEVLOG）：
-- dylib 运行时改主程序 `__TEXT`（mprotect/COW）→ 被 CT/PAC 页签名拒绝，**永久死刑**；
-- 程序化触发游戏 retry（triggerAction / 暂停层工厂）→ 三次尝试全部失败且污染 action 队列致卡死，**永久放弃**。
+## 4. 跨版本适配
 
-## 4. 跨版本移植
+- 架构按跨版本设计：**跨版本只动 `XRCProfile.h`**（每个偏移带出处注释），逻辑文件全部版本无关。
+- 五大功能（判定核 / 每帧更新 / 谱面钟 / 音频链 / 转场恢复）的锚点已在 6.13.10 与 7.0.255 两版定位并留指纹（判定核入口与全部 CMP 站点字节级同构），新版本按指纹重定位。
+- **探针自证**：`[probe] summary` 一行给出全部 hook 状态；适配后先看这行。
 
-- **手册**：工作区笔记 `research/notes/arcdemo-crossversion-anchors-6.13-vs-7.0.255.md`——五大功能在 6.13.10 与 7.0.255 上的完整锚点对照表 + 每功能"5 步定位法"。新版本适配从这份手册开始。
-- **纪律**：新增/修改偏移 = 先更新 research/notes 的语义笔记 → 再同步 `XRCProfile.h`（每项必须带出处注释）→ 两者同 commit。
-- **探针自证**：`[probe] summary` 一行给出全部 hook 状态；跨版本适配后先看这行。
-
-## 5. 证据纪律（xrc 约定）
-
-- 所有偏移可回溯至工作区 `research/notes/` 的语义笔记（判定链、时钟、音频链、retry 链、网络链）。
-- 真机验证记录写 DEVLOG（日期、现象、结论）；能力状态标记对齐能力账本（XRC-R/XRC-V/XRC-S/PROTO/OPEN）。
-- 打桩产物与注入前基线哈希成对登记（见 workspace MANIFEST 流程）。
-
-## 6. 构建
+## 5. 构建
 
 - 本地：Theos（`make`），产物 `.theos/obj/xrcdemo.dylib`。
-  首次需准备依赖：`git clone --depth 1 https://github.com/remember17/WHToast.git /tmp/whtoast && mkdir -p WHToast && cp -r /tmp/whtoast/WHToast WHToast/WHToast`
-  （CI 自动完成此步；WHToast 不做 git submodule，保持仓库自包含）。
-- CI：GitHub Actions（[build-tweak.yml](.github/workflows/build-tweak.yml)），三级缓存（Theos / iOS SDK / ellekit），产物 `libxrcdemo.dylib` + `libellekit.dylib`。
-- 发布分支：`publish-beta1.0` = 单提交的干净发布快照（无历史）；开发轨迹在 `main`。新仓首推用发布分支。
+  首次需准备依赖：
+
+  ```bash
+  git clone --depth 1 https://github.com/remember17/WHToast.git /tmp/whtoast && mkdir -p WHToast && cp -r /tmp/whtoast/WHToast WHToast/WHToast
+  ```
+
+- CI：GitHub Actions（`.github/workflows/build-tweak.yml`），三级缓存（Theos / iOS SDK / ellekit），产物 `libxrcdemo.dylib` + `libellekit.dylib`。
