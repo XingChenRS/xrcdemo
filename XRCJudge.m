@@ -32,8 +32,6 @@ static _Atomic(int) s_win_lost = 120;
 // handler 完全接管：用**可配置阈值**复刻同一级联。阈值来自 UI 四档
 // （Max/Pure/Far/Lost → 对应 25/50/100/120 附近），实现真正的动态改判。
 #if XRC_HAS_JUDGE_STUB
-// 原函数入口（未使用——完全接管；保留作回退开关）
-static uint64_t (*s_orig_judge)(uint64_t note, void *out) = NULL;
 static _Atomic(float) s_window_scale = 1.0f;
 
 // 可配置阈值（ms）——UI 四档写入
@@ -56,6 +54,15 @@ static _Atomic(uint32_t) s_call_total = 0;
 // a5 = 判定时刻的游戏时钟 ms（commit 内部用它算 a5 - note_time 做统计）
 typedef void (*commit_fn)(uint64_t, uint64_t, int, int, int64_t, int64_t);
 static commit_fn s_commit = NULL;
+
+// 长条落账（note_group+56, note, dir）—— 3 参，与原函数 LABEL_36 一致
+typedef void (*commit_ln_fn)(uint64_t, uint64_t, int);
+static commit_ln_fn s_commit_ln = NULL;
+
+// 特效对象（note_group+32）vtable 调用：
+//   普通 note → vtable[1](fx, note, grade, dir)
+//   长条      → vtable[0](fx, note)
+typedef void (*fx_fn)(uint64_t, uint64_t, int, int);
 
 // 判定 handler：X0 = note_group, X1 = note, X2 = 判定时间戳（调用方常未显式传）
 static uint64_t s_xrc_judge_handler(uint64_t note_group, uint64_t note, int64_t ts) {
@@ -94,7 +101,7 @@ static uint64_t s_xrc_judge_handler(uint64_t note_group, uint64_t note, int64_t 
     if (delta <= th_pure)      grade = 0;    // Pure
     else if (delta <= th_far)  grade = 1;    // Far
     else if (delta <= th_lost) grade = 2;    // Lost
-    else if (delta <= th_miss) grade = 3;    // Lost(长条)
+    else if (delta <= th_miss) grade = 3;    // Lost(长条路径)
     else {
         if (n < 8) acc_flog(@"[judge] MISS n=%u delta=%d note=%llx", n, delta, note);
         return 0;                            // Miss（不消费）
@@ -102,14 +109,34 @@ static uint64_t s_xrc_judge_handler(uint64_t note_group, uint64_t note, int64_t 
 
     // 前若干次调用全量打印（诊断）
     if (n < 12) {
-        acc_flog(@"[judge] n=%u grade=%d delta=%d dir=%d ts=%lld now=%d th=%d/%d/%d/%d commit=%p",
+        acc_flog(@"[judge] n=%u grade=%d delta=%d dir=%d ts=%lld now=%d th=%d/%d/%d/%d",
                  n, grade, delta, dir, judge_ts, now_ms,
-                 th_pure, th_far, th_lost, th_miss, (void *)s_commit);
+                 th_pure, th_far, th_lost, th_miss);
     }
 
-    // 落账（6 参，与原函数一致；a5 = 时间戳）
-    if (s_commit)
-        s_commit(*(uint64_t *)(note_group + 56), note, grade, dir, judge_ts, 0);
+    uint64_t ng56 = *(uint64_t *)(note_group + XRC_OFF_JUDGE_COMMIT_OBJ);
+    uint64_t fx   = *(uint64_t *)(note_group + XRC_OFF_JUDGE_FX_OBJ);
+
+    if (grade == 3) {
+        // 长条区间路径（原函数 LABEL_36，delta ∈ [101,120] 走这里）：
+        //   commit_ln(ng56, note, now_ms)   ← 第三参是当前钟时间，不是 dir
+        //   fx->vtable[0](fx, note)
+        if (s_commit_ln) s_commit_ln(ng56, note, (int)now_ms);
+        if (fx) {
+            uint64_t *vt = *(uint64_t **)fx;
+            if (vt && vt[0]) ((fx_fn)vt[0])(fx, note, 0, 0);
+        }
+    } else {
+        // 普通路径（LABEL_28/32/34）：
+        //   commit(ng56, note, grade, dirArg, ts, 0)，其中 Pure 的 dirArg = 0
+        //   （原函数 LABEL_28 用字面 0；Far/Lost 用 X22=dir）
+        int dir_arg = (grade == 0) ? 0 : dir;
+        if (s_commit) s_commit(ng56, note, grade, dir_arg, judge_ts, 0);
+        if (fx) {
+            uint64_t *vt = *(uint64_t **)fx;
+            if (vt && vt[1]) ((fx_fn)vt[1])(fx, note, grade, dir);
+        }
+    }
     return 1;   // 消费该 note
 }
 #endif
@@ -139,8 +166,9 @@ bool xrc_judge_install(uint64_t image_base) {
         return false;
     }
     struct xrc_slot *slot = (struct xrc_slot *)slot_va;
-    // 落账函数：判定函数内 sub_100ACB880（7.0.255）
-    s_commit = (commit_fn)(image_base + XRC_OFF_JUDGE_COMMIT_FN);
+    // 落账函数：判定函数内 sub_100ACB880（普通）/ sub_100ACB6A4（长条）
+    s_commit    = (commit_fn)   (image_base + XRC_OFF_JUDGE_COMMIT_FN);
+    s_commit_ln = (commit_ln_fn)(image_base + XRC_OFF_JUDGE_COMMIT_LN_FN);
     // 完全接管：写 handler 指针即接管；写 0 即原生直通（trampoline 保证）。
     slot->handler = (void *)&s_xrc_judge_handler;
     atomic_store(&s_judge_active, true);

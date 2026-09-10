@@ -39,7 +39,10 @@
 // ABI: X0 = note_group, X1 = note；返回 1 = 消费该 note，0 = Miss
 #define XRC_HAS_JUDGE_STUB          1
 #define XRC_JUDGE_STUB_ENTRY_OFF    (0x91E684ULL)   // sub_10091E684（判定核心，2 处直接 BL 调用）
-#define XRC_OFF_JUDGE_COMMIT_FN     (0xACB880ULL)   // sub_100ACB880（grade 落账）
+#define XRC_OFF_JUDGE_COMMIT_FN     (0xACB880ULL)   // sub_100ACB880（grade 落账，普通）
+#define XRC_OFF_JUDGE_COMMIT_LN_FN  (0xACB6A4ULL)   // sub_100ACB6A4（grade 落账，长条）
+#define XRC_OFF_JUDGE_FX_OBJ        (64)            // note_group+64 = 特效对象（imm12=8×8）
+#define XRC_OFF_JUDGE_COMMIT_OBJ    (56)            // note_group+56 = 判定计数对象
 // 注入器在 __DATA 零填充尾部写入 slot + info blob
 #define XRC_JUDGE_SLOT_OFF          (0x164AB28ULL)
 #define XRC_INFO_OFF                (0x164AB38ULL)
