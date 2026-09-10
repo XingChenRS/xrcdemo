@@ -148,6 +148,7 @@
 @property (nonatomic, strong) UILabel *capsLabel;
 @property (nonatomic, strong) UILabel *judgeHdr;
 @property (nonatomic, strong) NSMutableArray<UITextField *> *judgeFields;
+@property (nonatomic, assign) CGFloat contentHeight;
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic, assign) uint32_t pendingFrom;   // 第一次点 From 的暂存（ArcCreate 语义：直接取当前）
 @end
@@ -175,19 +176,23 @@
 - (void)show {
     UIWindow *w = [self keyWindow];
     if (!w) return;
-    // 高度按内容自适应：时间轴34 + 时间行32 + Repeat行34+速度34 + 改判62 + 退出36 + 状态16 + 边距
-    CGFloat h = 258;
+    // 高度：先按内容测量（buildIfNeeded 返回内容底边），再加边距
+    [self buildIfNeeded];
+    CGFloat contentH = [self contentHeight];
+    CGFloat h = contentH + 16;
     CGFloat margin = 8;
     CGFloat bottomInset = 0;
     if (@available(iOS 11.0, *)) bottomInset = w.safeAreaInsets.bottom;
     self.frame = CGRectMake(margin, w.bounds.size.height - h - margin - bottomInset, w.bounds.size.width - margin * 2, h);
     self.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
-    [self buildIfNeeded];
+    // 内容按最终宽度重排一次（宽度变化会影响换行）
+    [self relayoutContent];
     [w addSubview:self];
     [w bringSubviewToFront:self];
 
-    // 面板打开 = 冻结时间域（视觉/谱面暂停；音频继续由 seek 语义处理）
-    xrc_clock_freeze_inc();
+    // 注意：**不冻结时间域**（xrc_clock_freeze_* 会让 gp.update 时钟停止，
+    // 游戏逻辑卡死且退出面板无法恢复——真机教训 2026-09-10）。
+    // 面板打开只是 UI 覆盖层，不改时间基准。
 
     [self refresh];
     [self.timer invalidate];
@@ -197,7 +202,7 @@
 - (void)hide {
     [self.timer invalidate];
     self.timer = nil;
-    xrc_clock_freeze_dec();
+    // 不触碰时间域（面板从不冻结——见 show 注释）
     [self removeFromSuperview];
 }
 
@@ -322,6 +327,17 @@
     self.capsLabel.font = [UIFont systemFontOfSize:10];
     self.capsLabel.textColor = [UIColor colorWithWhite:0.7 alpha:1.0];
     [self addSubview:self.capsLabel];
+    self.contentHeight = y + 16;
+}
+
+// 内容重排（宽度变化后调用）：清空重建（简单可靠，面板非高频）
+- (void)relayoutContent {
+    for (UIView *v in [self.subviews copy]) [v removeFromSuperview];
+    self.timeline = nil; self.timeLabel = nil; self.speedLabel = nil;
+    self.speedSlider = nil; self.fromBtn = nil; self.toBtn = nil;
+    self.onOffBtn = nil; self.capsLabel = nil; self.judgeHdr = nil;
+    self.judgeFields = nil;
+    [self buildIfNeeded];
 }
 
 // 能力门控：不可用功能禁用（避免崩溃/异常），日志同源可见。

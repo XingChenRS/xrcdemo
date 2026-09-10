@@ -59,9 +59,6 @@ static commit_fn s_commit = NULL;
 // 判定 handler：X0 = note_group, X1 = note（见 sub_10091E684 签名 a1=note_group, a2=note）
 static uint64_t s_xrc_judge_handler(uint64_t note_group, uint64_t note) {
     uint32_t n = atomic_fetch_add(&s_call_total, 1);
-    if (n == 0 || n % 1000 == 0) {
-        acc_flog(@"[judge] call#%u note_group=%llx note=%llx", n, note_group, note);
-    }
     if (!note_group || !note) return 0;
 
     // 读谱面钟
@@ -91,21 +88,23 @@ static uint64_t s_xrc_judge_handler(uint64_t note_group, uint64_t note) {
     int th_miss = atomic_load(&s_th_miss);
 
     int grade;
-    if (delta <= th_pure)      grade = 0;   // Pure
-    else if (delta <= th_far)  grade = 1;   // Far
-    else if (delta <= th_lost) grade = 2;   // Lost
-    else if (delta <= th_miss) grade = 3;   // Lost(长条)
+    if (delta <= th_pure)      grade = 0;    // Pure
+    else if (delta <= th_far)  grade = 1;    // Far
+    else if (delta <= th_lost) grade = 2;    // Lost
+    else if (delta <= th_miss) grade = 3;    // Lost(长条)
     else {
-        if (n < 5) acc_flog(@"[judge] miss: delta=%d note_time=%d", delta, note_time);
+        if (n < 8) acc_flog(@"[judge] MISS n=%u delta=%d note=%llx", n, delta, note);
         return 0;                            // Miss（不消费）——与原函数一致
     }
 
-    if (n < 5) {
-        acc_flog(@"[judge] grade=%d delta=%d th=%d/%d/%d/%d",
-                 grade, delta, th_pure, th_far, th_lost, th_miss);
+    // 前若干次调用全量打印（诊断"显示变了但计分没变"）
+    if (n < 12) {
+        acc_flog(@"[judge] n=%u grade=%d delta=%d dir=%d th=%d/%d/%d/%d commit=%p ng56=%llx",
+                 n, grade, delta, dir, th_pure, th_far, th_lost, th_miss,
+                 (void *)s_commit, note_group ? *(uint64_t *)(note_group + 56) : 0);
     }
 
-    // 落账（与原函数相同的调用）
+    // 落账（与原函数相同的调用：commit(*(note_group+56), note, grade, dir)）
     if (s_commit)
         s_commit(*(uint64_t *)(note_group + 56), note, grade, dir);
     return 1;   // 消费该 note
