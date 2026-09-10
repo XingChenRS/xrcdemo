@@ -1,0 +1,8 @@
+.DS_Store
+.theos/
+packages/
+AppIcons/
+__pycache__/
+xrc_icon_b64.txt
+ci-artifacts/
+xrc_build_stamp.h

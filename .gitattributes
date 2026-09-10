@@ -1,0 +1,14 @@
+* text=auto
+
+*.h text eol=lf
+*.c text eol=lf
+*.m text eol=lf
+*.mm text eol=lf
+*.x text eol=lf
+*.pch text eol=lf
+*.py text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Makefile text eol=lf
+control text eol=lf

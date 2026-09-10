@@ -1,0 +1,119 @@
+name: Build xrcdemo
+
+on:
+  push:
+
+jobs:
+  build:
+    runs-on: macos-latest
+    env:
+      THEOS: ${{ github.workspace }}/theos
+      THEOS_SDK: iPhoneOS14.5.sdk
+      THEOS_VER: 5280bd0
+      EK_VER: ellekit-1.2
+      DYLIB_OUT: libxrcdemo.dylib
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # WHToast（toast UI 库）以固定 commit 拉取到 WHToast/，保持仓库自包含
+      # （不依赖 git submodule——旧仓的子模块登记曾丢失导致空目录）。
+      - name: Fetch WHToast
+        run: |
+          git clone --depth 1 https://github.com/remember17/WHToast.git /tmp/whtoast
+          mkdir -p WHToast
+          cp -r /tmp/whtoast/WHToast WHToast/WHToast
+          ls WHToast/WHToast/*.h WHToast/WHToast/*.m
+
+      - name: Install build deps
+        run: brew install ldid xz coreutils
+
+      # ---- cache: Theos toolchain ----
+      - name: Cache Theos
+        id: cache-theos
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.THEOS }}
+          key: theos-${{ env.THEOS_VER }}
+
+      - name: Clone Theos
+        if: steps.cache-theos.outputs.cache-hit != 'true'
+        run: git clone --recursive https://github.com/theos/theos.git "$THEOS"
+
+      # ---- cache: iOS SDK (release tarball, single file) ----
+      - name: Cache iOS SDK
+        id: cache-sdk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.THEOS }}/sdks/${{ env.THEOS_SDK }}
+          key: sdk-${{ env.THEOS_SDK }}
+
+      - name: Download iOS SDK 14.5
+        if: steps.cache-sdk.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p "$THEOS/sdks"
+          curl -L -o /tmp/sdk.tar.xz \
+            https://github.com/theos/sdks/releases/download/master-146e41f/iPhoneOS14.5.sdk.tar.xz
+          tar -xJf /tmp/sdk.tar.xz -C "$THEOS/sdks"
+
+      - name: Build dylib
+        run: |
+          make clean
+          # 构建戳：写头文件（避免 shell 引号问题），日志首行打印
+          printf '#define XRC_BUILD_STAMP "%s-%s"\n' "${GITHUB_SHA:0:7}" "$(date -u +%m%d%H%M)" > xrc_build_stamp.h
+          make
+          mkdir -p out
+          DYLIB="$(find .theos/obj -maxdepth 2 -name 'xrcdemo.dylib' -not -path '*.dSYM*' | head -n1)"
+          if [ -z "$DYLIB" ]; then echo "xrcdemo.dylib not found"; exit 1; fi
+          cp "$DYLIB" "out/${DYLIB_OUT}"
+          install_name_tool -change \
+            /Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate \
+            @rpath/libellekit.dylib \
+            "out/${DYLIB_OUT}"
+          install_name_tool -id @rpath/libxrcdemo.dylib "out/${DYLIB_OUT}"
+          ldid -S "out/${DYLIB_OUT}"
+          otool -L "out/${DYLIB_OUT}"
+          file "out/${DYLIB_OUT}"
+          lipo -info "out/${DYLIB_OUT}"
+
+      # ---- cache: prebuilt ellekit ----
+      - name: Cache ellekit
+        id: cache-ek
+        uses: actions/cache@v4
+        with:
+          path: out/libellekit.dylib
+          key: ellekit-${{ env.EK_VER }}
+
+      - name: Build ellekit
+        if: steps.cache-ek.outputs.cache-hit != 'true'
+        run: |
+          git clone --depth 1 https://github.com/tealbathingsuit/ellekit.git ek-src
+          cd ek-src
+          xcodebuild \
+            -project ellekit.xcodeproj \
+            -target ellekit \
+            -configuration Release \
+            -sdk iphoneos \
+            -arch arm64 -arch arm64e \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            IPHONEOS_DEPLOYMENT_TARGET=14.0 \
+            build SYMROOT=$PWD/build 2>&1 | tail -30
+          DYLIB=$(find build -name 'libellekit.dylib' -not -path '*.dSYM*' | head -n1)
+          if [ -z "$DYLIB" ]; then DYLIB=$(find build -path '*ellekit.framework/ellekit' | head -n1); fi
+          test -n "$DYLIB"
+          cp "$DYLIB" ../out/libellekit.dylib
+          install_name_tool -id @rpath/libellekit.dylib ../out/libellekit.dylib
+          ldid -S ../out/libellekit.dylib
+
+      - name: Upload dylibs
+        uses: actions/upload-artifact@v4
+        with:
+          name: libxrcdemo-sideload
+          path: |
+            out/libxrcdemo.dylib
+            out/libellekit.dylib
+          if-no-files-found: error
