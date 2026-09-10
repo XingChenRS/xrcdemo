@@ -92,6 +92,19 @@ void xrc_gameplay_set_resume_ms(uint32_t ms) {
 }
 uint32_t xrc_gameplay_get_resume_ms(void) { return atomic_load(&s_capture_ms); }
 
+// ---- 自动重建状态机（到 B → 冻结 → triggerAction(retry) → 新场景 seek 回 A）----
+// 语义依据：retry = 游戏自身"销毁旧场景→完整重建"链路（replay-chain §11），
+// 重建后音频/判定天然从头；配合 + 我们注入 seek 到 A = 真正的循环练习。
+// 失败降级链：triggerAction 无效（无暂停态前置？）→ 2s 超时 → 解冻 + 日志，
+// 用户手动 retry 仍能回 A（音频回跳检测）。
+#define XRC_AR_STATE_IDLE     0
+#define XRC_AR_STATE_FREEZE   1   // 已冻结，等 N 帧再触发（对齐暂停态）
+#define XRC_AR_STATE_TRIGGER  2   // 已触发，等新场景出现
+static _Atomic(uint32_t) s_ar_state = XRC_AR_STATE_IDLE;
+static _Atomic(uint64_t) s_ar_stamp_us = 0;
+static _Atomic(uint64_t) s_ar_scene_before = 0;
+static _Atomic(uint32_t) s_ar_target_a = 0;
+
 // 帧内调用（note_group 有效时）：音频位置回跳检测。
 static void s_retry_watch_tick(void) {
     if (atomic_load(&s_capture_ms) == 0) { s_prev_audio_ms = -1; return; }
@@ -450,19 +463,6 @@ void xrc_loop_get_range(uint32_t *from_ms, uint32_t *to_ms) {
     if (from_ms) *from_ms = atomic_load(&s_loop_a);
     if (to_ms)   *to_ms   = atomic_load(&s_loop_b);
 }
-// ---- 自动重建状态机（到 B → 冻结 → triggerAction(retry) → 新场景 seek 回 A）----
-// 语义依据：retry = 游戏自身"销毁旧场景→完整重建"链路（replay-chain §11），
-// 重建后音频/判定天然从头；配合 + 我们注入 seek 到 A = 真正的循环练习。
-// 失败降级链：triggerAction 无效（无暂停态前置？）→ 2s 超时 → 解冻 + 日志，
-// 用户手动 retry 仍能回 A（音频回跳检测）。
-#define XRC_AR_STATE_IDLE     0
-#define XRC_AR_STATE_FREEZE   1   // 已冻结，等 N 帧再触发（对齐暂停态）
-#define XRC_AR_STATE_TRIGGER  2   // 已触发，等新场景出现
-static _Atomic(uint32_t) s_ar_state = XRC_AR_STATE_IDLE;
-static _Atomic(uint64_t) s_ar_stamp_us = 0;
-static _Atomic(uint64_t) s_ar_scene_before = 0;
-static _Atomic(uint32_t) s_ar_target_a = 0;
-
 static void s_ar_trigger_retry(void) {
     extern uint64_t xrc_image_base(void);
     uint64_t base = xrc_image_base();
