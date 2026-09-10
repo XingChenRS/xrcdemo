@@ -42,7 +42,9 @@
 #if XRC_HAS_JUDGE_STUB
 extern uint64_t xrc_image_base(void);   // Tweak.x 提供
 
-typedef uint64_t (*xrc_fn1_t)(uint64_t);                      // note 门/特效 vtable 槽
+typedef uint64_t (*xrc_fn1_t)(uint64_t);                      // 前置门（note 单参）
+typedef void (*xrc_fx0_t)(uint64_t, uint64_t);                // 特效 vtable[0](fx, note)
+typedef void (*xrc_fx1_t)(uint64_t, uint64_t, uint64_t, uint64_t);  // vtable[1](fx,note,grade,dir)
 typedef uint64_t (*xrc_commit_t)(uint64_t, uint64_t, uint64_t, uint64_t,
                                  uint64_t, uint64_t);         // sub_100ACB880
 typedef uint64_t (*xrc_commit_ln_t)(uint64_t, uint64_t, uint64_t);  // sub_100ACB6A4
@@ -126,8 +128,8 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
         uint64_t fx    = rd64(ng + XRC_OFF_JUDGE_FX_OBJ);
         if (s_commit_ln && stats) s_commit_ln(stats, note, (uint64_t)dirv);
         if (fx) {
-            uint64_t f0 = rd64(rd64(fx));       // vtable[0]
-            if (f0) ((xrc_fn1_t)f0)(fx, note);  // 实际是 2 参（x1=note）
+            uint64_t f0 = rd64(rd64(fx));       // vtable[0](fx, note)：无 grade/dir
+            if (f0) ((xrc_fx0_t)f0)(fx, note);
         }
         atomic_fetch_add(&s_stat_ln, 1);
         return 1;
@@ -141,10 +143,9 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
             s_commit(stats, note, (uint64_t)(uint32_t)grade, (uint64_t)(uint32_t)dir,
                      (uint64_t)ts, a6);
         if (fx) {
-            uint64_t f1 = rd64(rd64(fx) + 8);   // vtable[1]
-            if (f1)
-                ((xrc_commit_t)f1)(fx, note, (uint64_t)(uint32_t)grade,
-                                   (uint64_t)(uint32_t)dir, 0, 0);
+            uint64_t f1 = rd64(rd64(fx) + 8);   // vtable[1](fx, note, grade, dir)
+            if (f1) ((xrc_fx1_t)f1)(fx, note, (uint64_t)(uint32_t)grade,
+                                    (uint64_t)(uint32_t)dir);
         }
         if (grade == 0)      atomic_fetch_add(&s_stat_pure, 1);
         else if (grade == 1) atomic_fetch_add(&s_stat_far, 1);
