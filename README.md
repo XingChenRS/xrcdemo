@@ -5,9 +5,10 @@ Arcaea iOS 侧载 dylib：无越狱运行时插件。xrc 工作区 `projects/run
 > 仓库：`XingChenRS/xrcdemo`（新仓单提交发布；本仓 = 旧 ArcDemo 的规范化重构）
 > 版本：**beta1.0**（2026-09-10）
 > 基线版本：**Arcaea iOS 7.0.255**
-> 证据与能力状态：**以 xrc 工作区 `research/notes/` 为准**——本仓库只含实现与门面文档；
-> 判定链/时钟/音频链/retry 链的逆向出处、6.13 × 7.0 锚点对照，均在 research/notes
-> （仓库内相对路径见 [§4](#4-跨版本移植)，跨仓引用按注释标注）。
+> 证据与能力状态：**以 xrc 工作区 `research/notes/` 为准**——本仓库只含实现与门面文档。
+> 判定链/时钟/音频链/retry 链的逆向出处、6.13 × 7.0 锚点对照，均为工作区笔记
+> （不在本仓内）：`arcdemo-crossversion-anchors-6.13-vs-7.0.255.md`、
+> `arcaea-6.13.10-capability-inventory.md`、`ios-7.0.255-judgement-correction-2026-09-10.md` 等。
 
 ## 1. 功能
 
@@ -69,13 +70,13 @@ Arcaea iOS 侧载 dylib：无越狱运行时插件。xrc 工作区 `projects/run
 
 ## 4. 跨版本移植
 
-- **手册**：[arcdemo-crossversion-anchors-6.13-vs-7.0.255.md](../../../research/notes/arcdemo-crossversion-anchors-6.13-vs-7.0.255.md)——五大功能在 6.13.10 与 7.0.255 上的完整锚点对照表 + 每功能"5 步定位法"。新版本适配从这份手册开始。
+- **手册**：工作区笔记 `research/notes/arcdemo-crossversion-anchors-6.13-vs-7.0.255.md`——五大功能在 6.13.10 与 7.0.255 上的完整锚点对照表 + 每功能"5 步定位法"。新版本适配从这份手册开始。
 - **纪律**：新增/修改偏移 = 先更新 research/notes 的语义笔记 → 再同步 `XRCProfile.h`（每项必须带出处注释）→ 两者同 commit。
 - **探针自证**：`[probe] summary` 一行给出全部 hook 状态；跨版本适配后先看这行。
 
 ## 5. 证据纪律（xrc 约定）
 
-- 所有偏移可回溯至 `research/notes/` 的语义笔记（判定链、时钟、音频链、retry 链、网络链）。
+- 所有偏移可回溯至工作区 `research/notes/` 的语义笔记（判定链、时钟、音频链、retry 链、网络链）。
 - 真机验证记录写 DEVLOG（日期、现象、结论）；能力状态标记对齐能力账本（XRC-R/XRC-V/XRC-S/PROTO/OPEN）。
 - 打桩产物与注入前基线哈希成对登记（见 workspace MANIFEST 流程）。
 
