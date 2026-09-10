@@ -132,7 +132,6 @@
 @property (nonatomic, strong) UILabel *capsLabel;
 @property (nonatomic, strong) UILabel *judgeHdr;
 @property (nonatomic, strong) NSMutableArray<UITextField *> *judgeFields;
-@property (nonatomic, strong) UIButton *retryResumeBtn;
 @property (nonatomic, assign) CGFloat contentHeight;
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic, assign) BOOL pendingTo;   // Set From 后等待 Set To
@@ -191,7 +190,28 @@
     [self removeFromSuperview];
 }
 
+// 换歌观察（面板开着时每 0.1s）：player 指针、曲长、位置三信号联合判定。
+// v8.9.6 真机教训：仅靠 player/channels 指针变化会漏（退出换歌指针复用）。
 - (void)tick {
+    static void *s_last_p = NULL;
+    static uint32_t s_last_len = 0;
+    static uint32_t s_last_pos = 0;
+    void *p = xrc_player_get();
+    uint32_t len = xrc_player_song_length_ms();
+    uint32_t pos = xrc_player_position_ms();
+    if (p != s_last_p || (s_last_len > 10000 && len == 0)) {
+        if (s_last_p != NULL) {
+            xrc_loop_reset_all();
+            acc_flog(@"practice state cleared (panel watch: p=%p len=%u->%u)", p, s_last_len, len);
+        }
+        s_last_p = p;
+    } else if (s_last_pos > 5000 && pos < 1000 && s_last_len > 10000) {
+        // 位置回跳 + 曲长还在（可能同曲重进）→ 也清（保守：只清循环区间）
+        xrc_loop_reset_all();
+        acc_flog(@"practice state cleared (panel watch: pos rewind %u->%u)", s_last_pos, pos);
+    }
+    s_last_len = len;
+    s_last_pos = pos;
     [self refresh];
 }
 
@@ -320,19 +340,13 @@
 
     // ---- tips（拖拽=跳转；循环 = 设起点→设终点→开循环；到终点自动重建回起点）----
     UILabel *tips = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
-    tips.text = @"拖时间轴=跳转 ｜ 循环: 设起点 → 播放到终点 → 设终点 → 开循环";
+    tips.text = @"拖时间轴=跳转 ｜ 循环: 设起点→播放到终点→设终点→开循环(到终点自动重开回起点)";
     tips.font = [UIFont systemFontOfSize:10];
     tips.textColor = [UIColor colorWithWhite:0.55 alpha:1.0];
     tips.adjustsFontSizeToFitWidth = YES;
     tips.minimumScaleFactor = 0.8;
     [self addSubview:tips];
     y += 14 + gap;
-
-    // ---- reset-on-retry toggle（勾选后：游戏内 retry 自动跳回练习起点）----
-    self.retryResumeBtn = [self makeButton:@"重开回起点 关" action:@selector(toggleRetryResume)];
-    self.retryResumeBtn.frame = CGRectMake(x0, y, W, rowH);
-    [self addSubview:self.retryResumeBtn];
-    y += rowH + blockGap;
 
     self.capsLabel = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
     self.capsLabel.font = [UIFont systemFontOfSize:10];
@@ -348,7 +362,7 @@
     self.timeline = nil; self.timeLabel = nil; self.speedLabel = nil;
     self.speedSlider = nil; self.fromBtn = nil; self.toBtn = nil;
     self.onOffBtn = nil; self.capsLabel = nil; self.judgeHdr = nil;
-    self.judgeFields = nil; self.retryResumeBtn = nil;
+    self.judgeFields = nil;
     [self buildIfNeeded];
 }
 
@@ -460,12 +474,6 @@
     [self.toBtn setTitle:(rangeOk ? [NSString stringWithFormat:@"终点 %02u:%02u", ts2/60, ts2%60]
                                   : (self.pendingTo ? @"终点(播放中)" : @"终点"))
                 forState:UIControlStateNormal];
-    BOOL resumeArmed = (xrc_gameplay_get_resume_ms() != 0);
-    [self.retryResumeBtn setTitle:(resumeArmed ? @"重开回起点 开" : @"重开回起点 关")
-                          forState:UIControlStateNormal];
-    self.retryResumeBtn.backgroundColor = resumeArmed
-        ? [UIColor colorWithRed:0.2 green:0.5 blue:0.9 alpha:1.0]
-        : [UIColor colorWithWhite:0.25 alpha:1.0];
     [self applyCapabilityGating];
 }
 
@@ -531,24 +539,6 @@
     [WHToast showMessage:[NSString stringWithFormat:@"循环区间 %02u:%02u - %02u:%02u，可开循环",
                           fs/60, fs%60, ts/60, ts%60]
                 duration:1.4 finishHandler:^{}];
-    [self refresh];
-}
-
-- (void)toggleRetryResume {
-    if (xrc_gameplay_get_resume_ms() != 0) {
-        xrc_gameplay_set_resume_ms(0);   // 解除
-        [WHToast showMessage:@"重开回起点：关" duration:0.8 finishHandler:^{}];
-    } else {
-        // capture 目标点 = 优先：已设循环的 A；否则当前播放位置
-        uint32_t a = 0, b = 0;
-        xrc_loop_get_range(&a, &b);
-        uint32_t target = (b > a + 1000) ? a : xrc_player_position_ms();
-        xrc_gameplay_set_resume_ms(target);
-        uint32_t cs = target / 1000;
-        [WHToast showMessage:[NSString stringWithFormat:
-            @"重开回起点：开，回到 %02u:%02u", cs/60, cs%60]
-                    duration:1.2 finishHandler:^{}];
-    }
     [self refresh];
 }
 

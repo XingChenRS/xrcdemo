@@ -78,6 +78,8 @@ static void *s_valid_note_group(void *scene) {
 // 从曲尾/当前点回到曲首（jump < -10s），单点演奏不可能产生。
 // 触发后写一个 pending seek（目标=capture）；deferred 状态机在**新场景**的下一帧
 // 才执行（旧场景已被 retry 销毁，同一帧不可用）。执行后解除（一次性）。
+// 阈值说明：retry/换歌重建后音频必然从曲中/曲尾回到 0ms 附近，单点演奏的
+// 帧间正常波动不可能超过 10 秒 → -10s 是"重建类事件"的可靠判据。
 #define XRC_RETRY_AUDIO_JUMP_MS  (-10000)   // 音频帧间回跳阈值
 static _Atomic(uint32_t) s_capture_ms = 0;      // 目标点（seek/循环 A 写入）；0 = 未武装
 static _Atomic(bool)     s_cap_valid = false;
@@ -452,6 +454,10 @@ void xrc_loop_set_enabled(bool on) {
     acc_flog(@"loop %s (A=%u B=%u)", on ? "ON" : "OFF", a, b);
 }
 // 换歌（退出重进）→ 练习状态归零。retry 不改 player 指针，不会走到这里。
+// 换歌/退出重进 = 练习状态归零（用户定义：只要退出重进就视作换歌，哪怕进同一首）。
+// 触发链：Tweak.x 的 0.5s 轮询（player 指针变化）+ 面板 tick 的三信号联合判据
+// （指针 / 曲长归零 / 位置回跳——v8.9.6 真机教训：单靠指针会漏）。
+// retry 不走这里：retry 是同一播放器实例内的场景重建，状态必须保留才能续练。
 void xrc_loop_reset_all(void) {
     atomic_store(&s_loop_enabled, false);
     atomic_store(&s_loop_a, 0);
@@ -463,6 +469,11 @@ void xrc_loop_get_range(uint32_t *from_ms, uint32_t *to_ms) {
     if (from_ms) *from_ms = atomic_load(&s_loop_a);
     if (to_ms)   *to_ms   = atomic_load(&s_loop_b);
 }
+// 程序化 retry（步进 1：只做"选中 Retry + 清理复位"）
+// 证据：sub_100947C20(pauseLayer) 即用户点 Retry 时序列的第①步（内部读
+// PauseLayer+688 的 PauseOverlay 树，故必须先构造 PauseLayer）。
+// 历史：直调 triggerAction(13)（旧 s_ar_trigger_retry）被游戏静默忽略
+// （v8.9.6 真机日志连续 TIMEOUT 证实）——action 13 需要暂停层上下文。
 static void s_ar_trigger_retry(void) {
     extern uint64_t xrc_image_base(void);
     uint64_t base = xrc_image_base();
@@ -471,11 +482,18 @@ static void s_ar_trigger_retry(void) {
     if (!locator) { acc_flog(@"auto-retry: service locator null"); return; }
     uint64_t game_model = *(uint64_t *)(locator + 0x10);
     if (!game_model) { acc_flog(@"auto-retry: game model null"); return; }
-    void (*trigger)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) =
-        (void (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t))
-        (base + XRC_OFF_ACTION_TRIGGER);
-    trigger(game_model, XRC_ACTION_RETRY, 1, 0, 0);
-    acc_flog(@"auto-retry: triggerAction(13) sent (gm=%p)", (void *)game_model);
+    void *scene = (void *)atomic_load(&s_ar_scene_before);   // 当前活场景（= delegate）
+    if (!scene) { acc_flog(@"auto-retry: no scene"); return; }
+    // PauseLayer(delegate=scene, gameModel, style=0)
+    uint64_t (*pause_factory)(void *, uint64_t, int) =
+        (uint64_t (*)(void *, uint64_t, int))(base + XRC_OFF_PAUSE_FACTORY);
+    uint64_t pl = pause_factory(scene, game_model, 0);
+    if (!pl) { acc_flog(@"auto-retry: pause factory returned null"); return; }
+    // 暂停完成例程（= Retry 点击序列第①步；内部经 delegate 转场景清理复位）
+    void (*setup)(uint64_t) = (void (*)(uint64_t))(base + XRC_OFF_PAUSE_SETUP);
+    setup(pl);
+    acc_flog(@"auto-retry: pause-layer retry setup done (pl=%p gm=%p)",
+             (void *)pl, (void *)game_model);
 }
 
 void xrc_loop_tick(void *gameplay, uint32_t pos_ms) {
@@ -520,10 +538,12 @@ void xrc_loop_tick(void *gameplay, uint32_t pos_ms) {
             return;
         }
         if (now - atomic_load(&s_ar_stamp_us) > 2000000ULL) {
-            // 2s 超时：triggerAction 未生效 → 解冻，退化为旧行为（等手动 retry）
+            // 2s 超时：未出现新场景 → 解冻，退化为旧行为（等手动 retry）。
+            // v8.9.6 日志显示没有暂停层上下文时"复位"被静默忽略——若这版仍超时，
+            // 说明还需要真正的场景重建调用（下一步：步进 2 = delegate 全序列）。
             xrc_clock_freeze_dec();
             atomic_store(&s_ar_state, XRC_AR_STATE_IDLE);
-            acc_flog(@"loop auto-retry: TIMEOUT (trigger ineffective) - unfroze");
+            acc_flog(@"loop auto-retry: TIMEOUT (setup ineffective) - unfroze");
         }
     }
 }

@@ -81,6 +81,13 @@
 #define XRC_OFF_SERVICE_LOCATOR     (0x1673DD8ULL)  // qword_101673DD8
 #define XRC_OFF_ACTION_TRIGGER      (0xB69644ULL)   // sub_100B69644
 #define XRC_ACTION_RETRY            (13)            // action id（0xD）
+// 暂停层工厂（sub_100BACD34(delegate, gameModel, style)）+ 暂停完成例程
+// （sub_100947C20(pauseLayer)，内容 = 游戏点 Retry 时序列的第①步）：
+// 程序化 retry = 构造 PauseLayer(delegate=当前场景, gm=全局单例, style) →
+// sub_100947C20(pauseLayer) → 游戏自己的重建链。delegate 传场景经
+// vtable 槽 172（sub_100CA762C → sub_100CA7538）转场景自身（this-680）。
+#define XRC_OFF_PAUSE_FACTORY       (0xBACD34ULL)   // sub_100BACD34
+#define XRC_OFF_PAUSE_SETUP         (0x947C20ULL)   // sub_100947C20
 
 // note 字段（改判 handler 读；replay-chain 笔记 §3.2）
 #define XRC_NOTE_TYPE_OFF           28
