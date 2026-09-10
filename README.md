@@ -2,10 +2,12 @@
 
 Arcaea iOS 侧载 dylib：无越狱运行时插件。xrc 工作区 `projects/runtime-ios/` 层的活跃项目。
 
-> 仓库：`XingChenRS/xrcdemo`（新仓；本仓为旧 ArcDemo 的规范化重构，历史提交不迁移）
+> 仓库：`XingChenRS/xrcdemo`（新仓单提交发布；本仓 = 旧 ArcDemo 的规范化重构）
 > 版本：**beta1.0**（2026-09-10）
-> 基线版本：**Arcaea iOS 7.0.255**（6.13.10 定位方法见跨版本手册，功能实现以 7.0.255 为准）
-> 证据与能力状态：以 [能力账本](../../../research/notes/xrc-arcaea-capability-ledger-2026-08-31.md) 为准；本文档只描述本仓库的定位、功能、结构与纪律。
+> 基线版本：**Arcaea iOS 7.0.255**
+> 证据与能力状态：**以 xrc 工作区 `research/notes/` 为准**——本仓库只含实现与门面文档；
+> 判定链/时钟/音频链/retry 链的逆向出处、6.13 × 7.0 锚点对照，均在 research/notes
+> （仓库内相对路径见 [§4](#4-跨版本移植)，跨仓引用按注释标注）。
 
 ## 1. 功能
 
