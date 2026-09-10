@@ -15,7 +15,7 @@ ArcDemo 演进记录。能力状态标记与 [xrc 能力账本](../../research/n
 - LN 落账第 3 参是**原始比较值**（不是 1/2）；分支 A 的 dir bias 是 **-3000**（delta 用 +3000）——两处旧假设已修正。
 - 时钟每帧由 `sub_10099A724` 计算（+32/+36/+40 由它写）；`+52<=0` 时计 -3000 前导。
 
-**改判架构（v8.9.0）**：
+**改判架构（v8.9.1）**：
 - handler 完全复刻上述语义，阈值 = 运行时四档（atomic），**不写任何 `__TEXT`**。
 - 跳板 v2（40B）：ADRP/ADD/LDR/CBZ/MOV X3,X6/BR + native 重放 3 条 + B 回 entry+12；slot v2 = 24B。
 - 兼容门：probe 检测 tramp[4]==MOV X3,X6（stub_v2），v2 缺失则改判区禁用（避免 v1 跳板 + v8.9 handler 丢 a6）。
