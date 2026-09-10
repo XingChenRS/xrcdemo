@@ -180,7 +180,7 @@
     [self buildIfNeeded];
     CGFloat contentH = [self contentHeight];
     CGFloat h = contentH + 16;
-    CGFloat margin = 8;
+    CGFloat margin = 12;
     CGFloat bottomInset = 0;
     if (@available(iOS 11.0, *)) bottomInset = w.safeAreaInsets.bottom;
     self.frame = CGRectMake(margin, w.bounds.size.height - h - margin - bottomInset, w.bounds.size.width - margin * 2, h);
@@ -213,22 +213,41 @@
 - (void)buildIfNeeded {
     if (self.subviews.count) return;
     self.backgroundColor = [UIColor colorWithWhite:0.05 alpha:0.88];
-    self.layer.cornerRadius = 10;
+    self.layer.cornerRadius = 12;
     self.layer.masksToBounds = YES;
 
-    CGFloat W = self.bounds.size.width - 20;   // 内容宽
-    CGFloat y = 8;
+    // Unified metrics (2026-09-10 relayout): every position derives from pad/gap,
+    // no magic numbers -> left/right columns can never overlap.
+    const CGFloat pad = 12;
+    const CGFloat gap = 8;
+    const CGFloat blockGap = 12;
+    const CGFloat rowH = 30;
+    CGFloat W = self.bounds.size.width - pad * 2;
+    if (W < 120) W = 336;                 // safe value before layout (show() re-lays out)
+    CGFloat x0 = pad;
+    CGFloat y = pad;
 
-    // 时间轴（PracticeTimeline 同构）
-    self.timeline = [[XRCTimelineView alloc] initWithFrame:CGRectMake(10, y, W, 34)];
+    // ---- title bar ----
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W - 76, 20)];
+    title.text = @"Practice";
+    title.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    title.textColor = [UIColor whiteColor];
+    [self addSubview:title];
+    UIButton *close = [self makeButton:@"Exit" action:@selector(hide)];
+    close.frame = CGRectMake(x0 + W - 70, y - 3, 70, 26);
+    [close setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
+    [self addSubview:close];
+    y += 20 + blockGap;
+
+    // ---- timeline (PracticeTimeline equivalent) ----
+    self.timeline = [[XRCTimelineView alloc] initWithFrame:CGRectMake(x0, y, W, 36)];
     __weak typeof(self) weakSelf = self;
     self.timeline.onScrub = ^(uint32_t ms, BOOL finished) {
         __strong typeof(weakSelf) self2 = weakSelf;
         if (!self2) return;
         if (finished) {
-            // 松手 = 执行 seek（deferred 到游戏循环）。
-            // replay 定案（2026-09-10）：seek 平移即重播路径（已判 note 不重现，
-            // 计分不回滚）。配置开启 seek_replay 时走同一实现（保留 op 语义区分）。
+            // Release = seek (deferred into the game loop). replay decision 2026-09-10:
+            // seek-shift IS the replay path (already-judged notes do not respawn).
             if (xrc_cfg_seek_replay())
                 xrc_gameplay_request(XRC_OP_SEEK_REPLAY, ms);
             else
@@ -236,72 +255,73 @@
         }
     };
     self.timeline.onRangeSelected = ^(uint32_t a, uint32_t b) {
-        // 拖选 = 直接设置循环区间（ArcCreate SetRepeatFrom/To 的拖动版）
         if (b > a + 1000) xrc_loop_set_range(a, b);
         [weakSelf refresh];
     };
     [self addSubview:self.timeline];
+    y += 36 + gap;
 
-    y += 40;
-    // 时间显示 + 跳转（PracticeTimingControl：±5000×speed）
-    self.timeLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, y, 110, 24)];
-    self.timeLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular];
-    self.timeLabel.textColor = [UIColor whiteColor];
+    // ---- time row: elapsed/length + -5s/+5s (JumpDuration = 5000 x speed) ----
+    self.timeLabel = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, 130, rowH)];
+    self.timeLabel.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightRegular];
+    self.timeLabel.textColor = [UIColor colorWithWhite:0.9 alpha:1.0];
     [self addSubview:self.timeLabel];
-
     UIButton *back = [self makeButton:@"-5s" action:@selector(jumpBack)];
-    back.frame = CGRectMake(W - 128, y, 56, 26);
+    back.frame = CGRectMake(x0 + W - 124, y, 58, 28);
     [self addSubview:back];
     UIButton *fwd = [self makeButton:@"+5s" action:@selector(jumpForward)];
-    fwd.frame = CGRectMake(W - 66, y, 56, 26);
+    fwd.frame = CGRectMake(x0 + W - 58, y, 58, 28);
     [self addSubview:fwd];
+    y += rowH + blockGap;
 
-    y += 32;
-    // Repeat 行（PracticeMenu 的 From/To/On-Off）
+    // ---- two-column grid: left = loop + speed, right = judgement 2x2 ----
+    CGFloat colW = (W - gap) / 2.0f;
+    CGFloat rx = x0 + colW + gap;
+
     self.fromBtn = [self makeButton:@"Set From" action:@selector(setFrom)];
-    self.fromBtn.frame = CGRectMake(10, y, 78, 30);
+    self.fromBtn.frame = CGRectMake(x0, y, colW / 2 - 4, rowH);
     [self addSubview:self.fromBtn];
     self.toBtn = [self makeButton:@"Set To" action:@selector(setTo)];
-    self.toBtn.frame = CGRectMake(92, y, 78, 30);
+    self.toBtn.frame = CGRectMake(x0 + colW / 2 + 4, y, colW / 2 - 4, rowH);
     [self addSubview:self.toBtn];
     self.onOffBtn = [self makeButton:@"Repeat OFF" action:@selector(toggleRepeat)];
-    self.onOffBtn.frame = CGRectMake(174, y, 110, 30);
+    self.onOffBtn.frame = CGRectMake(x0, y + rowH + gap, colW, rowH);
     [self addSubview:self.onOffBtn];
 
-    // 速度滑杆（SpeedSlider：0.01–2.0，snap 0.05）
-    self.speedSlider = [[UISlider alloc] initWithFrame:CGRectMake(10, y + 4, W - 130, 28)];
+    CGFloat speedY = y + 2 * (rowH + gap);
+    self.speedLabel = [[UILabel alloc] initWithFrame:CGRectMake(x0, speedY, 56, rowH)];
+    self.speedLabel.font = [UIFont monospacedDigitSystemFontOfSize:14 weight:UIFontWeightMedium];
+    self.speedLabel.textColor = [UIColor whiteColor];
+    [self addSubview:self.speedLabel];
+    self.speedSlider = [[UISlider alloc] initWithFrame:CGRectMake(x0 + 60, speedY, colW - 60, rowH)];
     self.speedSlider.minimumValue = 0.05f;
     self.speedSlider.maximumValue = 2.0f;
     self.speedSlider.continuous = YES;
     [self.speedSlider addTarget:self action:@selector(speedChanged:) forControlEvents:UIControlEventValueChanged];
-    self.speedLabel = [[UILabel alloc] initWithFrame:CGRectMake(W - 116, y, 100, 28)];
-    self.speedLabel.font = [UIFont monospacedDigitSystemFontOfSize:13 weight:UIFontWeightMedium];
-    self.speedLabel.textColor = [UIColor whiteColor];
-    [self addSubview:self.speedLabel];
     [self addSubview:self.speedSlider];
 
-    y += 34;
-    // 改判（judge window）：Max/Pure/Far/Lost 四档，缩放 = 总和/270
-    // 桩未激活时禁用（能力门控）
-    UILabel *judgeHdr = [[UILabel alloc] initWithFrame:CGRectMake(10, y, W, 16)];
-    judgeHdr.font = [UIFont systemFontOfSize:11];
-    judgeHdr.textColor = [UIColor colorWithWhite:0.8 alpha:1.0];
-    [self addSubview:judgeHdr];
-    self.judgeHdr = judgeHdr;
-    y += 18;
+    self.judgeHdr = [[UILabel alloc] initWithFrame:CGRectMake(rx, y, colW, 14)];
+    self.judgeHdr.font = [UIFont systemFontOfSize:10 weight:UIFontWeightMedium];
+    self.judgeHdr.textColor = [UIColor colorWithWhite:0.85 alpha:1.0];
+    self.judgeHdr.adjustsFontSizeToFitWidth = YES;
+    self.judgeHdr.minimumScaleFactor = 0.75;
+    self.judgeHdr.numberOfLines = 1;
+    [self addSubview:self.judgeHdr];
+
     int vals[4];
     xrc_judge_get_windows(&vals[0], &vals[1], &vals[2], &vals[3]);
-    const char *tags[4] = {"Max","Pure","Far","Lost"};
-    CGFloat colW = (W - 12) / 4.0f;
+    const char *tags[4] = {"Max", "Pure", "Far", "Lost"};
     self.judgeFields = [NSMutableArray array];
+    CGFloat cellW = (colW - gap) / 2.0f;
     for (int i = 0; i < 4; i++) {
-        UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(10 + colW*i, y, colW-4, 12)];
+        CGFloat cx = rx + (i % 2) * (cellW + gap);
+        CGFloat cy = y + 18 + (i / 2) * (rowH + gap);
+        UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(cx, cy, cellW, 12)];
         lbl.text = @(tags[i]);
         lbl.font = [UIFont systemFontOfSize:9];
-        lbl.textAlignment = NSTextAlignmentCenter;
         lbl.textColor = [UIColor grayColor];
         [self addSubview:lbl];
-        UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(10 + colW*i, y+12, colW-4, 28)];
+        UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(cx, cy + 13, cellW, 26)];
         tf.borderStyle = UITextBorderStyleRoundedRect;
         tf.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular];
         tf.textAlignment = NSTextAlignmentCenter;
@@ -312,23 +332,20 @@
         [self addSubview:tf];
         [self.judgeFields addObject:tf];
     }
-    y += 44;
 
-    UIButton *close = [self makeButton:@"Exit Practice" action:@selector(hide)];
-    close.frame = CGRectMake(10, y, W, 30);
-    [close setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
-    [self addSubview:close];
-    y += 36;
+    CGFloat leftBottom  = y + 3 * (rowH + gap) - gap;
+    CGFloat rightBottom = y + 18 + 2 * (rowH + gap) - gap + 13;
+    y = MAX(leftBottom, rightBottom) + blockGap;
 
-    // 能力状态行（探针结论直显，替代盲试）
-    self.capsLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, y, W, 16)];
+    self.capsLabel = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
     self.capsLabel.font = [UIFont systemFontOfSize:10];
     self.capsLabel.textColor = [UIColor colorWithWhite:0.7 alpha:1.0];
     [self addSubview:self.capsLabel];
-    self.contentHeight = y + 16;
+    y += 14 + 2;
+
+    self.contentHeight = y;
 }
 
-// 内容重排（宽度变化后调用）：清空重建（简单可靠，面板非高频）
 - (void)relayoutContent {
     for (UIView *v in [self.subviews copy]) [v removeFromSuperview];
     self.timeline = nil; self.timeLabel = nil; self.speedLabel = nil;
