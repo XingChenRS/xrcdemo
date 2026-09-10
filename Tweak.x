@@ -3,7 +3,7 @@
 #define XRC_TWEAK_VERSION  @"beta1.0"
 #define XRC_BUILD_LABEL    @"Sideload"
 // 版本契约（xrcdemo beta1.0，2026-09-10）：功能稳定版基线 = 7.0.255；
-// 6.13 定位方法见 research/notes/arcdemo-crossversion-anchors-6.13-vs-7.0.255.md。
+// 6.13 定位方法见 逆向笔记。
 // 构建号：CI 生成 xrc_build_stamp.h（commit sha + 时间）；本地构建回退 "dev"。
 // 日志首行打印——用于确认实际装配的版本，杜绝版本混淆。
 #if __has_include("xrc_build_stamp.h")

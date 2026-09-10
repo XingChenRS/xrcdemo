@@ -10,7 +10,7 @@ Two independent stages:
    both regions lie inside the existing segment filesizes. Re-sign afterwards
    (the user signs the result).
 
-Stub facts (Arcaea iOS 7.0.255, research/notes/ios-7.0.255-judgement-chain.md):
+Stub facts (Arcaea iOS 7.0.255):
   entry      vm 0x1009D9ED8  (fileoff 0x9D9ED8)
   trampoline vm 0x10146800C  (fileoff 0x146800C, __TEXT tail zero-run 0x146800a..0x146c000)
   slot       vm 0x10164AB28  (fileoff 0x164AB28, __DATA tail zero-run 0x164ab25..0x164c000)
@@ -33,9 +33,9 @@ LC_LOAD_DYLIB = 0x8000000C
 LC_RPATH = 0x8000001C
 
 # ---- judge stub constants (7.0.255, corrected 2026-09-10) ----
-# 判定核心 = sub_10091E684（整数 CMP 级联，与 6.13 sub_100870FD0 逐行同构）。
-# 此前误用 sub_1009D9ED8（特效显示链）——见
-# research/notes/ios-7.0.255-judgement-correction-2026-09-10.md
+# 判定核心 = sub_10091E684（整数 CMP 级联；与 6.13 sub_100870FD0 入口及 CMP
+# 站点字节级同构——跨版本可直接按字节指纹重定位，见 README §4）。
+# 注意：sub_1009D9ED8 是特效显示链，不是判定核。
 STUB_ENTRY_VA   = 0x10091E684
 STUB_ENTRY_FILE = 0x91E684
 STUB_TRAMP_VA   = 0x10146800C

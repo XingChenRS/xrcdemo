@@ -1,15 +1,16 @@
 // XRCProfile.h — 版本契约（Arcaea iOS 7.0.255）。
 // 跨版本迁移只改本文件（+ 注入器侧 profiles/<version>.json）。
-// 纪律：每个偏移必须有 research/notes 出处注释；禁止只改代码不加出处。
-// 6.13 适配已废弃（见 DEVLOG 2026-09-06）；历史 6.13 偏移在 git 历史与
-// research/notes/ios-6.13.10-stage1-patch-plan.md。
+// 纪律：每个偏移必须有出处注释（逆向结论/实测记录）；禁止只改代码不加出处。
+// 跨版本锚点：判定核/每帧更新/谱面钟/音频链/转场恢复在 6.13.10 与
+// 7.0.255 均已定位（判定核入口与 CMP 站点字节级同构）——新版本按
+// 同一指纹重定位后，只改本文件的偏移宏。
 #pragma once
 
 #include <stdint.h>
 #include <stdbool.h>
 
 // ---------------- 谱面钟对象布局 ----------------
-// 出处: research/notes/ios-7.0.255-replay-chain.md §4
+// 出处: 逆向笔记 §4
 // （与 6.13 真机验证的布局逐字节一致；+45 标志/+40 base/+52 当前/-3000 前导）。
 #define XRC_CLK_FLAG45_OFF        45   // =1 时走分段钟分支（读 +32）
 #define XRC_CLK_BASE_OFF          40   // seek 平移目标（base_off）
@@ -22,7 +23,7 @@
 #define XRC_CLOCK_IN_NOTEGROUP_OFF 48
 
 // ---------------- GameScene ----------------
-// 出处: research/notes/ios-7.0.255-replay-chain.md §2/§3
+// 出处: 逆向笔记 §2/§3
 // （vtable RTTI 名 9GameScene 已验；本文件所有值均为 image 偏移，
 //   运行时地址 = image_base + offset）
 #define XRC_OFF_GP_VTABLE          (0x151D8C0ULL)   // 绝对 VA 0x10151D8C0
@@ -33,8 +34,7 @@
 #define XRC_OFF_GP_UPDATE_FN       (0xCA7160ULL)    // 五参 (self,a2,a3,a4,a5)，同 6.13
 
 // ---------------- 桩点（改判） ----------------
-// 出处: research/notes/ios-7.0.255-judgement-correction-2026-09-10.md
-// 判定核心 = sub_10091E684（与 6.13 sub_100870FD0 逐行同构的整数 CMP 级联；
+// 出处: 逆向笔记// 判定核心 = sub_10091E684（与 6.13 sub_100870FD0 逐行同构的整数 CMP 级联；
 // 此前误把 sub_1009D9ED8/表B 当判定——那是特效显示链，已更正）。
 // ABI: X0 = note_group, X1 = note, X2 = ts（判定时刻 ms）；返回 1 = 消费该 note，
 // 0 = Miss（不消费）。handler 另收 X3 = caller X6（跳板 v2 的 MOV X3,X6）。
@@ -70,7 +70,7 @@
 #define XRC_INFO_OFF                (0x164AB40ULL)   // slot + 24
 
 // ---------------- retry 触发链（研究记录；**已停用，禁止调用**） ----------------
-// 出处: research/notes/ios-7.0.255-replay-chain.md §11（retry 三层链路逆向）
+// 出处: 逆向笔记 §11（retry 三层链路逆向）
 // 结论（2026-09-10，三次真机尝试）：程序化 retry 不可行——直调
 // triggerAction(GameModel, 13, 1) 及"建暂停层+推进度"组合全部被游戏静默
 // 忽略（Retry 回调首校验 PauseLayer+0x298==1），且重复触发会污染 GameModel
@@ -88,7 +88,7 @@
 #define XRC_NOTE_LOST_OFF           40
 
 // ---------------- 转场 / 循环 ----------------
-// 出处: research/notes/ios-7.0.255-replay-chain.md §6 + 诊断笔记 §7
+// 出处: 逆向笔记 §6 + 诊断笔记 §7
 // 状态（2026-09-10 真机 + 定案）：直调转场必崩——sub_100CA9590 内部先构造新场景、
 // 之后才读旧场景 note group（sub_10091BBB8(v3[116])），该指针已被拆为 NULL
 // → far=0x30 空指针（两次真机崩溃确认）。

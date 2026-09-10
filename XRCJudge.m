@@ -1,7 +1,7 @@
 // XRCJudge.m — 改判：静态桩（trampoline v2）+ dylib 完全接管 handler。
 //
 // 判定核 sub_10091E684（7.0.255，image base 0x100000000）逐条语义见
-// research/notes/ios-7.0.255-judgement-correction-2026-09-10.md §1/§4。
+// 逆向笔记 §1/§4。
 // 本文件是该语义的 C 复刻——**每一条出口都必须与反汇编一一对应**：
 //
 //   judge(note_group, note, ts):

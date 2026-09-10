@@ -381,7 +381,7 @@ void xrc_seek_ms(uint32_t ms) {
  *   capture 残留值把进度锁到随机位置的 bug）。
  *
  * 程序化 retry：三次尝试全部失败且最后一次污染 action 队列致卡死，
- *   永久放弃（全过程见 DEVLOG v8.9.6/7/8 与 replay 笔记 §11）。
+ *   永久放弃（全过程见历史记录 v8.9.6/7/8 与 replay 笔记 §11）。
  * ──────────────────────────────────────────────────────────────────────── */
 
 /*
@@ -403,7 +403,7 @@ void xrc_seek_ms(uint32_t ms) {
  *   v8.9.8 建层+置 0x298+triggerAction → 仍忽略，且 9 次尝试把 action
  *   记录塞进 GameModel 队列，污染状态致手动 retry 卡死转场界面。
  *   结论：retry 与暂停流程深度耦合，外部驱动需动内部状态，风险不可控。
- *   研究记录见 research/notes/ios-7.0.255-replay-chain.md §11 与 DEVLOG。
+ *   研究记录见 XRCProfile.h 的 retry 触发链注释段。
  *
  * 【退出重进 vs retry】
  *   换歌/退出重进 = 播放器实例更换或曲长归零（见面板 watcher 判据）→
