@@ -26,7 +26,6 @@ xrcdemo_LDFLAGS = -Xlinker -not_for_dyld_shared_cache
 
 ADDITIONAL_CFLAGS += -Wno-error=unused-variable -Wno-error=unused-function
 ADDITIONAL_CFLAGS += -Wno-error=deprecated-declarations
-ADDITIONAL_CFLAGS += -include Prefix.pch
 
 include $(THEOS)/makefiles/common.mk
 include $(THEOS_MAKE_PATH)/library.mk
