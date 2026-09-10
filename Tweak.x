@@ -20,6 +20,7 @@
 
 #include "XRCProfile.h"
 #include "XRCRuntime.h"
+#include "XRCProbe.h"
 #include "XRCClock.h"
 #include "XRCPlayer.h"
 #include "XRCGameplay.h"
@@ -175,6 +176,7 @@ static void doBootstrap(void) {
         @try { xrc_player_install(base); }      @catch (NSException *e) { acc_flog(@"player EX: %@", e); }
         @try { xrc_gameplay_install_hooks(base); } @catch (NSException *e) { acc_flog(@"gameplay EX: %@", e); }
         @try { xrc_judge_install(base); }       @catch (NSException *e) { acc_flog(@"judge EX: %@", e); }
+        @try { xrc_probe_run(); }               @catch (NSException *e) { acc_flog(@"probe EX: %@", e); }
         @try {
             static dispatch_once_t tw_once;
             dispatch_once(&tw_once, ^{

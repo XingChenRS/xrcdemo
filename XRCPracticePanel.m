@@ -13,6 +13,7 @@
 #include "XRCClock.h"
 #include "XRCPlayer.h"
 #include "XRCJudge.h"
+#include "XRCProbe.h"
 #include "XRCProfile.h"
 
 // ---------------- 时间轴视图（PracticeTimeline 同构） ----------------
@@ -143,6 +144,7 @@
 @property (nonatomic, strong) UIButton *fromBtn;
 @property (nonatomic, strong) UIButton *toBtn;
 @property (nonatomic, strong) UIButton *onOffBtn;
+@property (nonatomic, strong) UILabel *capsLabel;
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic, assign) uint32_t pendingFrom;   // 第一次点 From 的暂存（ArcCreate 语义：直接取当前）
 @end
@@ -274,6 +276,28 @@
     close.frame = CGRectMake(10, y, W, 30);
     [close setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
     [self addSubview:close];
+    y += 36;
+
+    // 能力状态行（探针结论直显，替代盲试）
+    self.capsLabel = [[UILabel alloc] initWithFrame:CGRectMake(10, y, W, 16)];
+    self.capsLabel.font = [UIFont systemFontOfSize:10];
+    self.capsLabel.textColor = [UIColor colorWithWhite:0.7 alpha:1.0];
+    [self addSubview:self.capsLabel];
+}
+
+// 能力门控：不可用功能禁用（避免崩溃/异常），日志同源可见。
+- (void)applyCapabilityGating {
+    BOOL replayOK = g_caps.replay_available;
+    // 循环按钮：无转场能力则禁用（回放走转场）
+    self.onOffBtn.enabled = replayOK;
+    self.onOffBtn.alpha = replayOK ? 1.0 : 0.4;
+    self.capsLabel.text = [NSString stringWithFormat:
+        @"caps: stub=%d judge=%d gp=%d mtp=%d replay=%d",
+        g_caps.stub_present, g_caps.judge_handler_live,
+        g_caps.gp_hook_live, g_caps.mtp_hook_live, g_caps.replay_available];
+    self.capsLabel.textColor = (g_caps.stub_present && g_caps.judge_handler_live)
+        ? [UIColor colorWithWhite:0.7 alpha:1.0]
+        : [UIColor colorWithRed:1.0 green:0.6 blue:0.4 alpha:1.0];   // 改判未生效 → 橙色警示
 }
 
 - (UIButton *)makeButton:(NSString *)title action:(SEL)sel {
@@ -309,6 +333,7 @@
     [self.onOffBtn setTitle:loopOn ? @"Repeat ON" : @"Repeat OFF" forState:UIControlStateNormal];
     self.onOffBtn.backgroundColor = loopOn ? [UIColor colorWithRed:0.2 green:0.5 blue:0.9 alpha:1.0]
                                            : [UIColor colorWithWhite:0.25 alpha:1.0];
+    [self applyCapabilityGating];
 }
 
 // ---- SpeedSlider 语义：0.01 下限、2.0 上限、snap 0.05 ----

@@ -25,7 +25,23 @@ static _Atomic(int) s_win_lost = 120;
 static uint64_t (*s_orig_judge)(uint64_t note, void *out) = NULL;
 static _Atomic(float) s_window_scale = 1.0f;
 
+// 探针计数：handler 被调用即证明桩通路端到端活（改判是否生效一目了然）。
+static _Atomic(uint32_t) s_call_total = 0;
+
 static uint64_t s_xrc_judge_handler(uint64_t note, void *out) {
+    uint32_t n = atomic_fetch_add(&s_call_total, 1);
+    if (n == 0) {
+        // 首次调用：采样 note 关键字段 + 原始窗口值（静态试错的替代）
+        float w0 = out ? *(float *)out : -1.0f;
+        acc_flog(@"[judge] FIRST call: note=%llx type=%d time=%d win_before=%.2f scale=%.2f",
+                 note,
+                 note ? *(int32_t *)(note + XRC_NOTE_TYPE_OFF) : -1,
+                 note ? *(int32_t *)(note + XRC_NOTE_TIME_OFF) : -1,
+                 w0, atomic_load(&s_window_scale));
+    } else if (n % 500 == 0) {
+        acc_flog(@"[judge] calls=%u last win=%.2f scale=%.2f",
+                 n, out ? *(float *)out : -1.0f, atomic_load(&s_window_scale));
+    }
     if (!s_orig_judge || !out) {
         if (out) *(uint64_t *)out = 0;
         return 0;

@@ -10,6 +10,7 @@
 #include <mach/mach_init.h>
 #include "XRCGameplay.h"
 #include "XRCRuntime.h"
+#include "XRCProbe.h"
 #include "XRCClock.h"
 #include "XRCPlayer.h"
 #include "XRCProfile.h"
@@ -25,21 +26,30 @@ static void *s_gp_last_clock = NULL;
 static uint64_t s_gp_last_real_us = 0;
 
 // ---- deferred 操作状态机 ----
-// 场景代数：转场后新场景 +1160 等字段变化 → 通过 self 指针变化检测场景切换，
-// 旧场景的 pending 请求自动作废（指针不同）。
+// 崩溃教训（2026-09-10 ips）：转场函数内部读 note_group+48（谱面钟），
+// note_group 为 NULL 时 far=0x30 崩溃。所有执行路径必须先做**两级非空校验**：
+//   scene != NULL && *(scene + XRC_GP_NOTEGROUP_OFF) != NULL
+// 且请求在场景指针变化（换场/重开）时自动作废——旧场景的请求在新场景上无意义。
 static _Atomic(uint32_t) s_pending_op    = XRC_OP_NONE;
 static _Atomic(uint32_t) s_pending_ms    = 0;
+static _Atomic(uint64_t) s_pending_scene = 0;   // 登记请求时的 scene 指针
 static _Atomic(uint64_t) s_last_exec_us  = 0;   // 冷却起点（真实时间 us）
-static _Atomic(uint64_t) s_exec_gen      = 0;   // 执行代（防同帧重复）
+static _Atomic(uint64_t) s_exec_gen      = 0;
 #define XRC_OP_COOLDOWN_US  (1500 * 1000ULL)    // 转场/seek 冷却 1.5s
 #define XRC_OP_MAX_IDLE_US  (4000 * 1000ULL)    // 请求超过 4s 未执行 → 丢弃
 
 bool xrc_gameplay_request(xrc_op_t op, uint32_t param_ms) {
+    void *scene = atomic_load(&xrc_gp_instance);
+    if (!scene) {
+        acc_flog(@"request rejected: no live scene");
+        return false;
+    }
     uint32_t cur = atomic_load(&s_pending_op);
     if (cur != XRC_OP_NONE) {
         acc_flog(@"request rejected: pending op=%u", cur);
         return false;
     }
+    atomic_store(&s_pending_scene, (uint64_t)scene);
     atomic_store(&s_pending_ms, param_ms);
     atomic_store(&s_pending_op, op);
     return true;
@@ -49,12 +59,15 @@ xrc_op_t xrc_gameplay_pending_op(void) {
     return (xrc_op_t)atomic_load(&s_pending_op);
 }
 
-// 请求到期清理（避免卡死状态机）
-static void s_pending_expire_if_stale(uint64_t now_us) {
-    uint64_t req_time = atomic_load(&s_last_exec_us);
-    if (req_time && now_us - req_time > XRC_OP_MAX_IDLE_US) {
-        atomic_store(&s_pending_op, XRC_OP_NONE);
-    }
+// 两级非空校验：返回可用 note_group，否则 NULL。
+static void *s_valid_note_group(void *scene) {
+    if (!scene) return NULL;
+    void *ng = *(void **)((char *)scene + XRC_GP_NOTEGROUP_OFF);
+    if (!ng) return NULL;
+    // 谱面钟必须可读（转场内部第一步就读 +48）
+    void *clk = *(void **)((char *)ng + XRC_CLOCK_IN_NOTEGROUP_OFF);
+    if (!clk) return NULL;
+    return ng;
 }
 
 // 在游戏循环内执行 pending（self = 当前活场景）。
@@ -63,31 +76,55 @@ static void s_exec_pending(void *self) {
     if (op == XRC_OP_NONE) return;
 
     uint64_t now = xrc_real_now_us();
+
+    // 场景变更 → 丢弃陈旧请求（旧场景的 seek/转场在新场景无意义）
+    uint64_t req_scene = atomic_load(&s_pending_scene);
+    if (req_scene != (uint64_t)self) {
+        atomic_store(&s_pending_op, XRC_OP_NONE);
+        acc_flog(@"pending op=%u dropped (scene changed %llx -> %p)", op, req_scene, self);
+        return;
+    }
+
     uint64_t last = atomic_load(&s_last_exec_us);
     if (last && now - last < XRC_OP_COOLDOWN_US) return;  // 冷却中
-    s_pending_expire_if_stale(now);
+
+    // 过期丢弃
+    static uint64_t s_req_time = 0;
+    if (s_req_time == 0) s_req_time = now;
+    if (now - s_req_time > XRC_OP_MAX_IDLE_US) {
+        atomic_store(&s_pending_op, XRC_OP_NONE);
+        s_req_time = 0;
+        return;
+    }
 
     uint32_t ms = atomic_load(&s_pending_ms);
-    atomic_store(&s_pending_op, XRC_OP_NONE);   // 先清（防止执行内重入）
+
+    // 执行前最终校验（崩溃 guard）
+    void *note_group = s_valid_note_group(self);
+    if (!note_group) {
+        acc_flog(@"pending op=%u aborted: note_group/clock null (scene=%p)", op, self);
+        atomic_store(&s_pending_op, XRC_OP_NONE);
+        return;
+    }
+
+    atomic_store(&s_pending_op, XRC_OP_NONE);   // 先清（防执行内重入）
     atomic_store(&s_last_exec_us, now);
+    s_req_time = 0;
     atomic_fetch_add(&s_exec_gen, 1);
 
-    if (op == XRC_OP_SEEK || op == XRC_OP_SEEK_REPLAY) {
-        // 音频 seek + 谱面钟平移（纯数据操作，安全）
+    if (op == XRC_OP_SEEK || op == XRC_OP_SEEK_REPLAY || op == XRC_OP_LOOP_REWIND) {
+        // 音频 seek（player 可能已换歌，重新取）
         void *player = xrc_player_get();
         if (player) {
             xrc_clock_freeze_inc();
             xrc_player_seek_ms(player, ms);
             xrc_clock_freeze_dec();
         }
-        void *note_group = *(void **)((char *)self + XRC_GP_NOTEGROUP_OFF);
         int32_t cur_ms = xrc_chart_clock_ms(note_group);
         if (cur_ms >= -3000) {
-            void *clk = note_group ? *(void **)((char *)note_group + XRC_CLOCK_IN_NOTEGROUP_OFF) : NULL;
-            if (clk) {
-                int32_t *base_off = (int32_t *)((char *)clk + XRC_CLK_BASE_OFF);
-                *base_off += cur_ms - (int32_t)ms;
-            }
+            void *clk = *(void **)((char *)note_group + XRC_CLOCK_IN_NOTEGROUP_OFF);
+            int32_t *base_off = (int32_t *)((char *)clk + XRC_CLK_BASE_OFF);
+            *base_off += cur_ms - (int32_t)ms;
         }
         s_gp_last_real_us = 0;
         acc_flog(@"seek executed: ms=%u (cur was %d)", ms, cur_ms);
@@ -95,11 +132,19 @@ static void s_exec_pending(void *self) {
 
 #if XRC_HAS_TRANSITION
     if (op == XRC_OP_SEEK_REPLAY || op == XRC_OP_LOOP_REWIND) {
-        // 转场重开：谱面钟已平移到目标（上面 seek 已做），带进度转场
-        if (xrc_transition_resume(self, true))
-            acc_flog(@"transition resume executed (op=%u, ms=%u)", op, ms);
-        else
-            acc_flog(@"transition resume FAILED (op=%u)", op);
+        // 能力门控：探针确认转场可用才执行（避免旧场景已拆时的 UAF）
+        if (!g_caps.replay_available) {
+            acc_flog(@"transition skipped: replay_available=0 (probe)");
+        } else {
+            // 再次校验（转场内部第一步读 note_group+48）
+            if (!s_valid_note_group(self)) {
+                acc_flog(@"transition aborted: note_group/clock null");
+            } else if (xrc_transition_resume(self, true)) {
+                acc_flog(@"transition resume executed (op=%u, ms=%u)", op, ms);
+            } else {
+                acc_flog(@"transition resume FAILED (op=%u)", op);
+            }
+        }
     }
 #endif
 }
