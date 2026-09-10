@@ -16,8 +16,15 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
+
+      # WHToast（toast UI 库）以固定 commit 拉取到 WHToast/，保持仓库自包含
+      # （不依赖 git submodule——旧仓的子模块登记曾丢失导致空目录）。
+      - name: Fetch WHToast
+        run: |
+          git clone --depth 1 https://github.com/remember17/WHToast.git /tmp/whtoast
+          mkdir -p WHToast
+          cp -r /tmp/whtoast/WHToast WHToast/WHToast
+          ls WHToast/WHToast/*.h WHToast/WHToast/*.m
 
       - name: Install build deps
         run: brew install ldid xz coreutils
