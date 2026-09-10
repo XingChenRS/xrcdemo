@@ -1,6 +1,6 @@
 // xrc-arcdemo / Tweak.x — bootstrap + 悬浮 UI。
 // 游戏逻辑全部在 XRC* 模块；交互全部在 XRCPracticePanel（ArcCreate 同构）。
-#define XRC_TWEAK_VERSION  @"v8.6.0"
+#define XRC_TWEAK_VERSION  @"v8.9.0"
 #define XRC_BUILD_LABEL    @"Sideload"
 // 构建号：CI 生成 xrc_build_stamp.h（commit sha + 时间）；本地构建回退 "dev"。
 // 日志首行打印——用于确认实际装配的版本，杜绝版本混淆。
@@ -184,7 +184,10 @@ static void doBootstrap(void) {
         @try { initButton(); }       @catch (NSException *e) { acc_flog(@"initButton EX: %@", e); }
         @try { xrc_player_install(base); }      @catch (NSException *e) { acc_flog(@"player EX: %@", e); }
         @try { xrc_gameplay_install_hooks(base); } @catch (NSException *e) { acc_flog(@"gameplay EX: %@", e); }
-        @try { xrc_judge_install(base); }       @catch (NSException *e) { acc_flog(@"judge EX: %@", e); }
+        @try {
+            if (xrc_judge_install(base))
+                xrc_judge_log_stats();   // 安装成功 → 打一次基线统计
+        } @catch (NSException *e) { acc_flog(@"judge EX: %@", e); }
         @try { xrc_probe_run(); }               @catch (NSException *e) { acc_flog(@"probe EX: %@", e); }
         @try {
             static dispatch_once_t tw_once;

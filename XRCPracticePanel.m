@@ -226,15 +226,13 @@
         __strong typeof(weakSelf) self2 = weakSelf;
         if (!self2) return;
         if (finished) {
-            // 松手 = 执行 seek（deferred 到游戏循环；seek-replay 由配置决定）
-#if XRC_HAS_TRANSITION
+            // 松手 = 执行 seek（deferred 到游戏循环）。
+            // replay 定案（2026-09-10）：seek 平移即重播路径（已判 note 不重现，
+            // 计分不回滚）。配置开启 seek_replay 时走同一实现（保留 op 语义区分）。
             if (xrc_cfg_seek_replay())
                 xrc_gameplay_request(XRC_OP_SEEK_REPLAY, ms);
             else
                 xrc_gameplay_request(XRC_OP_SEEK, ms);
-#else
-            xrc_gameplay_request(XRC_OP_SEEK, ms);
-#endif
         }
     };
     self.timeline.onRangeSelected = ^(uint32_t a, uint32_t b) {
@@ -342,7 +340,7 @@
 
 // 能力门控：不可用功能禁用（避免崩溃/异常），日志同源可见。
 - (void)applyCapabilityGating {
-    BOOL replayOK = g_caps.replay_available && XRC_HAS_TRANSITION;
+    BOOL replayOK = g_caps.replay_available;   // 槽 178 存在（seek-replay 依赖）
     // 循环按钮：无转场能力则禁用（回放走转场）
     self.onOffBtn.enabled = replayOK;
     self.onOffBtn.alpha = replayOK ? 1.0 : 0.4;

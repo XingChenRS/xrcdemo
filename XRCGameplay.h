@@ -43,8 +43,8 @@ void xrc_seek_ms(uint32_t ms);
 // 读取谱面钟当前值（按 XRCProfile 的 clock 布局）。
 int32_t xrc_chart_clock_ms(void *note_group);
 
-// 转场重放（7.0 转场机制；XRC_HAS_TRANSITION=0 的版本无实现）。
-// resume: 是否带进度重开（a2=1）。
+// 转场直调（**已废弃路线**，仅 XRC_HAS_TRANSITION=1 编译；会 UAF 崩溃）。
+// replay 现走 seek 平移：xrc_gameplay_request(XRC_OP_SEEK_REPLAY/LOOP_REWIND)。
 bool xrc_transition_resume(void *gameplay, bool resume);
 // A-B 循环状态：From/To（ms）与启用标志（ArcCreate 语义：To >= From+1000）。
 bool xrc_loop_get_enabled(void);

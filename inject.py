@@ -42,14 +42,14 @@ STUB_TRAMP_VA   = 0x10146800C
 STUB_TRAMP_FILE = 0x146800C
 STUB_SLOT_VA    = 0x10164AB28
 STUB_SLOT_FILE  = 0x164AB28
-STUB_INFO_VA    = 0x10164AB38   # slot + 16
-STUB_INFO_FILE  = 0x164AB38
+STUB_INFO_VA    = 0x10164AB40   # slot + 24（slot v2 由 16B 扩为 24B）
+STUB_INFO_FILE  = 0x164AB40
 # expected first 3 insns at entry (file byte order; IDA dwords
 # a9bc5ff8=a90157f6=a9024ff4 as STP X24,X23 / STP X22,X21 / STP X20,X19):
 STUB_ENTRY_EXPECT = bytes.fromhex("f85fbca9f65701a9f44f02a9")
 
 XRC_MAGIC = 0x58424331  # 'XRC1'
-XRC_INFO_VERSION = 1
+XRC_INFO_VERSION = 2  # blob 版本：v2 = slot 24B + 判定链 ABI
 
 # 静态偏移（VA - image base 0x100000000）
 GP_VTABLE_OFF   = 0x151D8C0   # GameScene vtable
@@ -77,41 +77,49 @@ def encode_b(pc_addr: int, dst: int) -> int:
 
 
 def build_trampoline() -> bytes:
-    """Full-takeover trampoline (converged spec section 2.2)."""
+    """Full-takeover trampoline v2 (2026-09-10)。
+
+    v1 只保 X0/X1/X2；判定核 sub_10091E684 的第 6 参 X6 由调用方透传进落账
+    函数 sub_100ACB880（judge 自身从不写 X6），handler 重排参数后必须原样
+    转发。v2 在 BR 前插一条 `MOV X3, X6`，把 a6 作为 handler 的第 4 参传入——
+    无需动 SP、无需保存区，跳板只做分发与一次寄存器搬移。
+
+    handler 签名（与 xrc_abi.h 一致）：
+        uint64_t handler(ng /*x0*/, note /*x1*/, ts /*x2*/, a6 /*x3=X6*/)
+    handler 用普通 C 函数（BR 不改 LR，其 RET 直接回到判定核的调用方）。
+
+    布局（40B，< 64B 上限）：
+      0  ADRP X9, slot_page
+      4  ADD  X9, X9, #pgoff
+      8  LDR  X9, [X9]        (slot+0 = handler)
+      12 CBZ  X9, native
+      16 MOV  X3, X6
+      20 BR   X9
+      24 native: replay 3 insns (12B) + B entry+12
+    """
     out = bytearray()
-    # ADRP X9, slot_page; ADD X9, X9, #pgoff
-    pc = STUB_TRAMP_VA
-    pc_page = pc & ~0xFFF
+    pc_page = STUB_TRAMP_VA & ~0xFFF
     slot_page = STUB_SLOT_VA & ~0xFFF
     imm = (slot_page - pc_page) >> 12
     adrp = 0x90000000 | ((imm & 3) << 29) | (((imm >> 2) & 0x7FFFF) << 5) | 9
     add = 0x91000000 | ((STUB_SLOT_VA & 0xFFF) << 10) | (9 << 5) | 9
-    out += struct.pack("<II", adrp, add)
-    pc += 8
-    # LDR X9, [X9]        (0xF9400129)
-    out += struct.pack("<I", 0xF9400129)
-    pc += 4
-    # CBZ X9, native（目标 = 重放区起点 = 当前 pc + 4(BR 占位) + 4(CBZ 自身之后即 native)）
-    cbz_pc = pc
-    native_va = cbz_pc + 8  # 跳过 CBZ + BR 两条
-    off = (native_va - cbz_pc) >> 2
-    cbz = 0xB4000000 | ((off & 0x7FFFF) << 5) | 9
-    out += struct.pack("<I", cbz)
-    pc += 4
-    # BR X9（0xD61F0120：Rn=X9=0b01001<<5=0x120）
-    out += struct.pack("<I", 0xD61F0120)
-    pc += 4
-    # native: replay 3 insns then B entry+12
-    out += STUB_ENTRY_EXPECT
-    pc += 12
-    out += struct.pack("<I", encode_b(pc, STUB_ENTRY_VA + 12))
+    out += struct.pack("<II", adrp, add)             # ADRP/ADD X9, slot
+    out += struct.pack("<I", 0xF9400129)             # LDR X9, [X9]
+    native_va = STUB_TRAMP_VA + 24
+    off = (native_va - (STUB_TRAMP_VA + 12)) >> 2
+    out += struct.pack("<I", 0xB4000000 | ((off & 0x7FFFF) << 5) | 9)  # CBZ X9, native
+    out += struct.pack("<I", 0xAA0603E3)             # MOV X3, X6
+    out += struct.pack("<I", 0xD61F0120)             # BR X9
+    out += STUB_ENTRY_EXPECT                         # native: 重放前 3 条
+    out += struct.pack("<I", encode_b(native_va + 12, STUB_ENTRY_VA + 12))
     return bytes(out)
 
 def build_info_blob() -> bytes:
     """xrc_info 结构：magic + version + 6 个静态偏移 + reserved[8]。
     dyld 不 rebase 零填充区（不在 rebase 列表），dylib 手动重定位。"""
     fields = [
-        XRC_MAGIC, XRC_INFO_VERSION,
+        XRC_MAGIC, 2,   # version 2: slot 24B + 判定链 ABI（v1 为 1）
+
         STUB_ENTRY_VA - 0x100000000,   # judge_entry_off
         STUB_SLOT_VA - 0x100000000,    # judge_slot_off
         GP_VTABLE_OFF,
@@ -142,12 +150,12 @@ def patch_judge_stub(data: bytearray) -> list[str]:
     data[tramp_file:tramp_file + len(tramp)] = tramp
     logs.append(f"trampoline ({len(tramp)}B) @ fileoff {tramp_file:#x} (vm {STUB_TRAMP_VA:#x})")
 
-    # slot: 16 bytes {handler=0, orig=STUB_ENTRY_VA}
+    # slot v2: 24 bytes {handler=0, orig=STUB_ENTRY_VA, reserved=0}
     slot_file = base + STUB_SLOT_FILE
-    if bytes(data[slot_file:slot_file + 16]) != b"\0" * 16:
+    if bytes(data[slot_file:slot_file + 24]) != b"\0" * 24:
         raise RuntimeError(f"slot region not zero @ {slot_file:#x}")
-    data[slot_file:slot_file + 16] = struct.pack("<QQ", 0, STUB_ENTRY_VA)
-    logs.append(f"slot (16B) @ fileoff {slot_file:#x} (vm {STUB_SLOT_VA:#x})")
+    data[slot_file:slot_file + 24] = struct.pack("<QQQ", 0, STUB_ENTRY_VA, 0)
+    logs.append(f"slot v2 (24B) @ fileoff {slot_file:#x} (vm {STUB_SLOT_VA:#x})")
 
     # info blob: 桩点回报信息（运行时锚点清单，dylib 手动重定位）
     info = build_info_blob()

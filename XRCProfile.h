@@ -36,20 +36,25 @@
 // 出处: research/notes/ios-7.0.255-judgement-correction-2026-09-10.md
 // 判定核心 = sub_10091E684（与 6.13 sub_100870FD0 逐行同构的整数 CMP 级联；
 // 此前误把 sub_1009D9ED8/表B 当判定——那是特效显示链，已更正）。
-// ABI: X0 = note_group, X1 = note；返回 1 = 消费该 note，0 = Miss
+// ABI: X0 = note_group, X1 = note, X2 = ts（判定时刻 ms）；返回 1 = 消费该 note，
+// 0 = Miss（不消费）。handler 另收 X3 = caller X6（跳板 v2 的 MOV X3,X6）。
 #define XRC_HAS_JUDGE_STUB          1
 #define XRC_JUDGE_STUB_ENTRY_OFF    (0x91E684ULL)   // sub_10091E684（判定核心，2 处直接 BL 调用）
-#define XRC_OFF_JUDGE_COMMIT_FN     (0xACB880ULL)   // sub_100ACB880（grade 落账，普通）
-#define XRC_OFF_JUDGE_COMMIT_LN_FN  (0xACB6A4ULL)   // sub_100ACB6A4（grade 落账，长条）
+#define XRC_OFF_JUDGE_COMMIT_FN     (0xACB880ULL)   // sub_100ACB880（grade 落账，6 参，首指令是门）
+#define XRC_OFF_JUDGE_COMMIT_LN_FN  (0xACB6A4ULL)   // sub_100ACB6A4（近失/长条落账，3 参）
 #define XRC_OFF_JUDGE_FX_OBJ        (64)            // note_group+64 = 特效对象
 #define XRC_OFF_JUDGE_COMMIT_OBJ    (56)            // note_group+56 = 判定计数对象
-// 桩 trampoline（inject.py 生成）：native 重放区位于 tramp+20
-// （布局：ADRP+ADD(8) LDR(4) CBZ(4) BR(4) → native 重放 3 条原指令 + B 回 entry+12）
-// 直通原函数逻辑 = 跳到 tramp+20（跳过 handler 分派）。
+// 桩跳板（inject.py 生成，跳板 v2 = 40B：分发 + MOV X3,X6 + native 重放 3 条）
+// 布局：ADRP/ADD(8) LDR(4) CBZ(4) MOV X3,X6(4) BR(4) → native 重放 3 条原指令
+// + B 回 entry+12。handler 从 X3 拿 caller 的 X6（判定核从不写、落账函数需要）。
+// 直通（slot.handler==0）= CBZ 跳 native，行为与未注入完全一致。
 #define XRC_STUB_TRAMP_OFF          (0x146800CULL)  // trampoline 静态偏移
-#define XRC_STUB_TRAMP_NATIVE_OFF   (XRC_STUB_TRAMP_OFF + 20)
+#define XRC_STUB_TRAMP_NATIVE_OFF   (XRC_STUB_TRAMP_OFF + 24)
 
-// 判定函数的 8 个 CMP 阈值站点（CMP Wn,#imm12；改判 = 改写 imm12）
+// 判定函数的 8 个 CMP 阈值站点（CMP Wn,#imm12）。
+// 2026-09-10 定案：**handler + 运行时阈值**取代立即数改写（dylib 写 __TEXT 会撞
+// CT/PAC，见功能矩阵形态 4）。这些偏移保留用于：(a) 跨版本指纹校验；
+// (b) 静态烘焙路线（重打包版把 imm12 直接写成目标值 → 无需桩点）。
 // 分支 B（分段钟，clk+45==1）：26/51/101/121
 #define XRC_CMP_B_PURE              (0x91E720ULL)
 #define XRC_CMP_B_FAR               (0x91E728ULL)
@@ -60,9 +65,9 @@
 #define XRC_CMP_A_FAR               (0x91E7CCULL)
 #define XRC_CMP_A_LOST              (0x91E810ULL)
 #define XRC_CMP_A_MISS              (0x91E848ULL)
-// 注入器在 __DATA 零填充尾部写入 slot + info blob
+// 注入器在 __DATA 零填充尾部写入 slot v2（24B）+ info blob（120B，紧邻其后）。
 #define XRC_JUDGE_SLOT_OFF          (0x164AB28ULL)
-#define XRC_INFO_OFF                (0x164AB38ULL)
+#define XRC_INFO_OFF                (0x164AB40ULL)   // slot + 24
 
 // note 字段（改判 handler 读；replay-chain 笔记 §3.2）
 #define XRC_NOTE_TYPE_OFF           28
@@ -71,18 +76,19 @@
 #define XRC_NOTE_FAR_OFF            36
 #define XRC_NOTE_LOST_OFF           40
 
-// ---------------- 转场重放 ----------------
-// 出处: research/notes/ios-7.0.255-replay-chain.md §6
-// 状态（2026-09-10 真机）：直调转场必崩——sub_100CA9590 内部先构造新场景、
+// ---------------- 转场 / 循环 ----------------
+// 出处: research/notes/ios-7.0.255-replay-chain.md §6 + 诊断笔记 §7
+// 状态（2026-09-10 真机 + 定案）：直调转场必崩——sub_100CA9590 内部先构造新场景、
 // 之后才读旧场景 note group（sub_10091BBB8(v3[116])），该指针已被拆为 NULL
-// → far=0x30 空指针。游戏自身从 pause 菜单走 retry 时有完整前置序。
-// 正解 = 驱动游戏自己的 retry（pause 菜单 retryButton 回调），见
-// research/notes/ios-7.0.255-arcdemo-diagnosis-2026-09-10.md。
-// 在 retry 路线落地前，XRC_HAS_TRANSITION 关闭（UI 隐藏 replay/循环）。
+// → far=0x30 空指针（两次真机崩溃确认）。
+// 定案：**replay 不再走转场**。seek 平移（音频 seek + 谱面钟 base 平移）即
+// 重播路线；循环 = 到 B 点 deferred 回 A。已判 note 不重现、计分不回滚，
+// 属"练习定位"语义；需要完整重播时用户在暂停菜单自行 retry 后再 seek。
+// XRC_HAS_TRANSITION 仅控制"直调转场"这条已废弃的路线，保持 0。
 #define XRC_HAS_TRANSITION          0
-#define XRC_TRANSITION_VTABLE_SLOT  178
-#define XRC_TRANSITION_FLAG_OFF     1144  // a2=1 转场标志
-#define XRC_RESUME_POS_OFF          1140  // 新场景恢复位置（ms）
+#define XRC_TRANSITION_VTABLE_SLOT  178     // 仅探针引用（槽存在性探测）
+#define XRC_TRANSITION_FLAG_OFF     1144  // a2=1 转场标志（历史记录）
+#define XRC_RESUME_POS_OFF          1140  // 新场景恢复位置（历史记录）
 
 // ---------------- 音频链（seek/进度条） ----------------
 // 出处: 2026-09-06 重定位（研究笔记 ios-7.0.255-replay-chain.md 未含本段，

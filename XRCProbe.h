@@ -11,7 +11,8 @@
 #include <stdbool.h>
 
 typedef struct {
-    bool stub_present;        // 入口字节 = 我方 patch 且 trampoline 字节正确
+    bool stub_present;        // 入口字节 = 我方 patch
+    bool stub_v2;             // trampoline = v2（含 MOV X3,X6；v1 缺 a6 转发）
     bool judge_handler_live;  // slot.orig 合理 且 slot.handler == 我方 handler
     bool gp_hook_live;        // GameScene vtable[103] == xrc_gameplay_update
     bool mtp_hook_live;       // MTP vtable[7] == 我方 getpos

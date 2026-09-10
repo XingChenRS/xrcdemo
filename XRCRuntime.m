@@ -35,11 +35,11 @@ static bool s_data_segment_range(uint64_t image_base, uint64_t *start, uint64_t 
     return false;
 }
 
-// 在 [start, end) 扫描 magic（8 字节对齐）。
+// 在 [start, end) 扫描 magic（8 字节对齐）。接受 v1/v2 blob（字段前缀兼容）。
 static const struct xrc_info *s_scan_info(uint64_t start, uint64_t end) {
     for (uint64_t a = start; a + sizeof(struct xrc_info) <= end; a += 8) {
         const struct xrc_info *info = (const struct xrc_info *)a;
-        if (info->magic == XRC_MAGIC && info->version == 1)
+        if (info->magic == XRC_MAGIC && info->version >= 1 && info->version <= XRC_INFO_VERSION)
             return info;
     }
     return NULL;

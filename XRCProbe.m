@@ -52,15 +52,23 @@ void xrc_probe_run(void) {
              g_caps.stub_present, entry,
              entry ? *(const uint32_t *)entry : 0);
 
-    // 2. 改判 handler 是否活：slot.orig 指向桩的 native 重放区（= entry+12 附近的
-    //    trampoline 内），且 slot.handler == 我方已注册指针。
+    // 1b. trampoline v2 特征：v2 布局 [ADRP,ADD,LDR,CBZ,MOV X3,X6,BR,...]，
+    //     判定字 = 偏移 16（word 4）== 0xAA0603E3。v1 该位置是 BR。
+    {
+        extern uint64_t xrc_image_base(void);
+        const uint32_t *tr = (const uint32_t *)(xrc_image_base() + 0x146800CULL);
+        g_caps.stub_v2 = (tr[4] == 0xAA0603E3u);
+        acc_flog(@"[probe] trampoline v2=%d (tramp[4]=%08x)", g_caps.stub_v2, tr[4]);
+    }
+
+    // 2. 改判 handler 是否活：slot v2 {handler, orig, reserved}。
+    //    handler == 我方注册指针且 orig == 判定核入口（native 直通时跳回原函数）。
     if (g_xrc.judge_slot) {
-        uint64_t orig = *(const uint64_t *)g_xrc.judge_slot;
-        uint64_t handler = *(const uint64_t *)(g_xrc.judge_slot + 8);
-        (void)orig;
-        g_caps.judge_handler_live = xrc_judge_is_active();
-        acc_flog(@"[probe] judge slot=%llx orig_slot=%llx handler_slot=%llx active=%d",
-                 g_xrc.judge_slot, orig, handler, g_caps.judge_handler_live);
+        const void *handler = *(const void *const *)g_xrc.judge_slot;
+        uint64_t orig = *(const uint64_t *)(g_xrc.judge_slot + 8);
+        g_caps.judge_handler_live = xrc_judge_is_active() && g_caps.stub_v2;
+        acc_flog(@"[probe] judge slot=%llx handler_slot=%p orig_slot=%llx active=%d",
+                 g_xrc.judge_slot, handler, orig, g_caps.judge_handler_live);
     } else {
         acc_flog(@"[probe] judge slot anchor missing (stub not injected?)");
     }

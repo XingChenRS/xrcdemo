@@ -2,6 +2,33 @@
 
 ArcDemo 演进记录。能力状态标记与 [xrc 能力账本](../../research/notes/xrc-arcaea-capability-ledger-2026-08-31.md) 对齐（XRC-R 运行中 / XRC-V 已验证 / XRC-S 静态闭环 / PROTO 失败原型 / OPEN 未闭合）。
 
+## 2026-09-10 — 改判定案（接管 handler + 跳板 v2）/ replay 定案（seek 平移）
+
+**Context（用户指示）**：CMP 运行时改写路线判死（dylib 写主程序 `__TEXT` 撞 CT/PAC，真机日志 `mprotect FAILED`）；
+改判回到"静态桩 + 完全接管"，但这次把判定链**逐条解出**再写 handler。
+
+**判定链最终解剖（IDA 逐条核对）**：
+- 判定核 `sub_10091E684(note_group, note, ts)`：1 次 X2 保存；两条前置虚门（vtable[64]&1 → 0；vtable[48]&1==0 → 0）；
+  双分支 delta/dir；三级 CMP 级联（B: 26/51/101/121，A: 25/50/100/120）；**5 条出口**全数确认：
+  Pure/Far/Lost → `commit(=sub_100ACB880, 6 参)` + `fx[1]`；LN 区间 → `commit_ln(=sub_100ACB6A4, 3 参)` + `fx[0]`；超界 → return 0。
+- 关键新发现：落账第 6 参 X6 由调用方透传、判定核从不写 → 跳板必须在 BR 前 `MOV X3, X6`（跳板 v2）。
+- LN 落账第 3 参是**原始比较值**（不是 1/2）；分支 A 的 dir bias 是 **-3000**（delta 用 +3000）——两处旧假设已修正。
+- 时钟每帧由 `sub_10099A724` 计算（+32/+36/+40 由它写）；`+52<=0` 时计 -3000 前导。
+
+**改判架构（v8.9.0）**：
+- handler 完全复刻上述语义，阈值 = 运行时四档（atomic），**不写任何 `__TEXT`**。
+- 跳板 v2（40B）：ADRP/ADD/LDR/CBZ/MOV X3,X6/BR + native 重放 3 条 + B 回 entry+12；slot v2 = 24B。
+- 兼容门：probe 检测 tramp[4]==MOV X3,X6（stub_v2），v2 缺失则改判区禁用（避免 v1 跳板 + v8.9 handler 丢 a6）。
+
+**replay 定案**：转场直调（槽 178）两次 UAF 崩溃 → 彻底放弃；replay/循环 = **seek 平移**
+（音频 seek + 谱面钟 base 平移，判定比较 `|note - (cur - base)|`，`base -= (cur - target)` 即整体平移）。
+语义：已判 note 不重现、计分不回滚（练习定位）；完整重播 = 用户暂停菜单自 retry 后再 seek。
+
+**能力门控更新**：`XRC_HAS_TRANSITION` 保持 0（仅保留编译分支）；循环/seek-replay UI 依赖 `replay_available`（槽 178 探测）。
+
+**交付**：`incoming/arcaea-7.0/stubbed-main/Arc-mobile` v5（sha256 4c127deb…，stub v2 + slot v2 + info v2）。
+**要求**：dylib ≥ v8.9.0 必须配 v5 主程序；旧 v1 跳板 + 新 handler 会丢 a6（probe 会拦）。
+
 ## 2026-09-07 — Deferred 状态机 + 能力门控
 
 - 崩溃修复：转场/seek 全部 deferred 到 gp.update 游戏循环内执行（UI 回调里旧场景可能已释放 → UAF）。状态机：SEEK / SEEK_REPLAY / LOOP_REWIND 三种操作，1.5s 冷却、4s 过期丢弃、代计数。UI 只登记。

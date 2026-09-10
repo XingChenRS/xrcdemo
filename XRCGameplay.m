@@ -1,5 +1,7 @@
-// XRCGameplay.m — gp.update hook + 谱面钟 retime + seek + 转场重放。
-// 6.13 已验证语义迁入；7.0 转场骨架（XRC_HAS_TRANSITION 分支）。
+// XRCGameplay.m — gp.update hook + 谱面钟 retime + seek（含 replay/循环）。
+// seek 平移 = 音频 seek + 谱面钟 base 平移（判定比较 |note - (cur - base)|，
+// 所以 base -= (cur - target) 即整体平移）。转场直调路线已废弃（UAF），
+// XRC_HAS_TRANSITION 保持 0，仅保留编译分支与探针。
 
 #import <Foundation/Foundation.h>
 #import "AccCommon.h"    // acc_flog
@@ -120,6 +122,8 @@ static void s_exec_pending(void *self) {
             xrc_player_seek_ms(player, ms);
             xrc_clock_freeze_dec();
         }
+        // 谱面钟平移：判定比较的是"当前值 - 基准"，基准 -= (cur - target) 即可。
+        // 写 +40/+36 后两分支都能自洽（分支 B 的 clock_ms = +32 - +40 同理）。
         int32_t cur_ms = xrc_chart_clock_ms(note_group);
         if (cur_ms >= -3000) {
             void *clk = *(void **)((char *)note_group + XRC_CLOCK_IN_NOTEGROUP_OFF);
@@ -130,23 +134,11 @@ static void s_exec_pending(void *self) {
         acc_flog(@"seek executed: ms=%u (cur was %d)", ms, cur_ms);
     }
 
-#if XRC_HAS_TRANSITION
     if (op == XRC_OP_SEEK_REPLAY || op == XRC_OP_LOOP_REWIND) {
-        // 能力门控：探针确认转场可用才执行（避免旧场景已拆时的 UAF）
-        if (!g_caps.replay_available) {
-            acc_flog(@"transition skipped: replay_available=0 (probe)");
-        } else {
-            // 再次校验（转场内部第一步读 note_group+48）
-            if (!s_valid_note_group(self)) {
-                acc_flog(@"transition aborted: note_group/clock null");
-            } else if (xrc_transition_resume(self, true)) {
-                acc_flog(@"transition resume executed (op=%u, ms=%u)", op, ms);
-            } else {
-                acc_flog(@"transition resume FAILED (op=%u)", op);
-            }
-        }
+        // replay 路线（2026-09-10 定案）：seek 平移即重播。已判 note 不重现、
+        // 计分不回滚——如需完整重播，用户在暂停菜单自行 retry 后再 seek。
+        acc_flog(@"replay executed via seek (op=%u)", op);
     }
-#endif
 }
 
 // ---- vtable swizzle（PAC 感知）----
@@ -240,10 +232,8 @@ void xrc_gameplay_update(void *self, uint64_t a2, uint64_t a3, uint64_t a4, uint
         void *note_group = *(void **)((char *)self + XRC_GP_NOTEGROUP_OFF);
         if (note_group) {
             s_gp_retime_logic_clock(note_group);
-#if XRC_HAS_TRANSITION
             int32_t pos = xrc_chart_clock_ms(note_group);
             if (pos > 0) xrc_loop_tick(self, (uint32_t)pos);
-#endif
         }
         s_exec_pending(self);   // deferred 操作（seek/转场）在活场景循环内执行
     }
@@ -307,7 +297,12 @@ void xrc_seek_ms(uint32_t ms) {
 
 #pragma mark - 循环/转场状态（分 profile）
 
-#if XRC_HAS_TRANSITION
+// replay 定案（2026-09-10）：不再直调转场函数（sub_100CA9590 会读旧场景
+// note_group → UAF，已两次真机崩溃）。改为 seek 平移路线——音频 seek +
+// 谱面钟 base 平移（XRC_CLK_BASE_OFF）。已判 note 不重现、计分不回滚，
+// 属"练习定位"语义；循环 = 到 B 点后 deferred seek 回 A，往复。
+// XRC_HAS_TRANSITION 保留为 0（转场直调路线已废弃，槽 178 仅作探测）。
+
 typedef void (*transition_fn)(void *scene, int resume);
 
 static _Atomic(bool) s_loop_enabled = false;
@@ -315,6 +310,7 @@ static _Atomic(uint32_t) s_loop_a = 0;
 static _Atomic(uint32_t) s_loop_b = 0;
 
 bool xrc_transition_resume(void *gameplay, bool resume) {
+#if XRC_HAS_TRANSITION
     extern uint64_t xrc_image_base(void);
     uint64_t base = xrc_image_base();
     if (!base || !XRC_OFF_GP_VTABLE) return false;
@@ -330,6 +326,10 @@ bool xrc_transition_resume(void *gameplay, bool resume) {
     ((transition_fn)fn_raw)(gameplay, resume ? 1 : 0);
 #endif
     return true;
+#else
+    (void)gameplay; (void)resume;
+    return false;
+#endif
 }
 
 bool xrc_loop_get_enabled(void) { return atomic_load(&s_loop_enabled); }
@@ -356,14 +356,4 @@ void xrc_loop_tick(void *gameplay, uint32_t pos_ms) {
         xrc_gameplay_request(XRC_OP_LOOP_REWIND, atomic_load(&s_loop_a));
     }
 }
-#else
-bool xrc_transition_resume(void *gameplay, bool resume) { return false; }
-bool xrc_loop_get_enabled(void) { return false; }
-void xrc_loop_set_range(uint32_t from_ms, uint32_t to_ms) {}
-void xrc_loop_get_range(uint32_t *from_ms, uint32_t *to_ms) {
-    if (from_ms) *from_ms = 0;
-    if (to_ms)   *to_ms   = 0;
-}
-void xrc_loop_tick(void *gameplay, uint32_t pos_ms) {}
-#endif
 

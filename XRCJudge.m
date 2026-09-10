@@ -1,133 +1,175 @@
-// XRCJudge.m — 改判：slot 注册 + 完全接管 handler。
-// 完全接管 sub_1009D9ED8（7.0.255，ABI 已确认：X0=note，X8=out，无 sret）。
-// 逻辑版本无关：note 字段偏移从 XRCProfile.h 读取。
-// TODO(v1.1)：窗口值语义按表 B 消费格式完成（replay-chain 笔记 §9 待解码后实现）。
+// XRCJudge.m — 改判：静态桩（trampoline v2）+ dylib 完全接管 handler。
+//
+// 判定核 sub_10091E684（7.0.255，image base 0x100000000）逐条语义见
+// research/notes/ios-7.0.255-judgement-correction-2026-09-10.md §1/§4。
+// 本文件是该语义的 C 复刻——**每一条出口都必须与反汇编一一对应**：
+//
+//   judge(note_group, note, ts):
+//     if (note->vtable[64](note) & 1) return 0;      // 前置门 1
+//     if (note->vtable[48](note) & 1) return 0;      // 前置门 2
+//     w8  = *(int*)(note + 0x18);                    // note 时间
+//     clk = *(void**)(note_group + 0x30);
+//     分支 B（clk[45]==1）: w10=*(int*)(clk+0x20); w11=*(int*)(clk+0x28);
+//                           delta=|w8-w10+w11|;  dir=(w10-w11>=w8)?2:1
+//     分支 A:               w10=*(int*)(clk+0x34); lead=(w10>0)?0:3000;
+//                           delta=|w8-w10+*(int*)(clk+0x28)+lead|;
+//                           dir=((w10-*(int*)(clk+0x28))+(w10>0?0:-3000) >= w8)?2:1
+//     delta <  T_pure → commit(grade 0, dir, ts, a6) + fx[1](fx,note,0,dir); return 1
+//     delta <  T_far  → commit(grade 1, dir, ts, a6) + fx[1](fx,note,1,dir); return 1
+//     delta <  T_lost → commit(grade 2, dir, ts, a6) + fx[1](fx,note,2,dir); return 1
+//     delta <= T_miss → commit_ln(ng+0x38, note, dir_ln) + fx[0](fx,note);   return 1
+//     else                                                                   return 0
+//
+// 记分对象 = *(ng+0x38)，特效对象 = *(ng+0x40)（调用时现场读取，不缓存）。
+// commit = sub_100ACB880(6 参，首指令是 note->vtable[32](note, ts, a6) 门)；
+// commit_ln = sub_100ACB6A4(3 参，首指令是 note->vtable[56](note, 1) 门)。
+// 时间基：ts = 调用方 X2；delta 用 note+0x18。ts 的约定（游戏全局时间 ms /
+// note time 值域）尚未在真机校验，CMP 级联对时间基平移敏感——若窗口表现异常，
+// 用 slot 里的 orig 直通对照定位（见 §4 待验证项）。
+//
+// 与历史版本的差异（教训）：
+//   v8.4 漏 a5/a6 → 门不过 → 静默不计分；v8.6 漏特效调用 → 无打击特效；
+//   v8.7 出口复制不全 → 乱爆 Lost / 事件消失；v8.8 dylib 写 __TEXT → CT 拒。
+//   本版：不写任何 __TEXT；出口逐条对齐；参数按 trampoline v2 契约（X3=X6）。
 
 #import <Foundation/Foundation.h>
 #import "AccCommon.h"    // acc_flog
-#include <sys/mman.h>     // mprotect（CMP 站点改写）
-#include <errno.h>
 #include "XRCJudge.h"
 #include "XRCProfile.h"
 #include "XRCRuntime.h"
 #include "xrc_abi.h"
 
-static _Atomic(int) s_win_max  = 25;
-static _Atomic(int) s_win_pure = 50;
-static _Atomic(int) s_win_far  = 100;
-static _Atomic(int) s_win_lost = 120;
-
-// ---- 完全接管 handler（X0=note, X8=out）----
-// 7.0.255 窗口求值器输出语义（IDA 已确认）：*out = 单个 f32 窗口值（ms），
-// caller 把它加到特效时间基上（sub_100BB5508 L115 vadd_f32）。
-// handler 采用"缩放"路线：调原函数拿基准窗口 → 乘用户缩放 → 写回。
-// 无需复刻表 B（note 类型分派原函数自己做）。
-// ---- 改判 handler（CMP 立即数改写策略，2026-09-10 架构切换）----
-// 背景：完全接管 sub_10091E684 需要精确复刻 6 条出口路径（Pure/Far/Lost 的
-// commit+fx、长条 commit_ln+fx、Miss），漏一条即出 bug（真机教训）。
-//
-// 新策略（用户提出，更稳）：**不接管函数，只改它的 8 个 CMP 立即数**。
-//   分支 B（分段钟）：0x10091e720(Pure) / e728(Far) / e730(Lost) / e738(上界)
-//   分支 A（普通钟）：0x10091e788(Pure) / e7cc(Far) / e810(Lost) / e848(上界)
-// handler 每次被调用时按需重写（只在配置变化时写），随后**直通原函数**
-// （X0/X1/X2 未动，原逻辑零复刻）。
-//
-// 写 __TEXT 需要绕过页签名：mprotect 到 RW 产生 COW 匿名页（旁路签名）。
-// 失败则降级为直通（仅日志），不影响游戏。
 #if XRC_HAS_JUDGE_STUB
 extern uint64_t xrc_image_base(void);   // Tweak.x 提供
-static _Atomic(float) s_window_scale = 1.0f;
 
-// 原函数入口（长条回退/直通用）。槽的 native 重放区 = 静态地址，需按 slide 重定位。
-static uint64_t (*s_orig_judge)(uint64_t note_group, uint64_t note, int64_t ts) = NULL;
+typedef uint64_t (*xrc_fn1_t)(uint64_t);                      // note 门/特效 vtable 槽
+typedef uint64_t (*xrc_commit_t)(uint64_t, uint64_t, uint64_t, uint64_t,
+                                 uint64_t, uint64_t);         // sub_100ACB880
+typedef uint64_t (*xrc_commit_ln_t)(uint64_t, uint64_t, uint64_t);  // sub_100ACB6A4
 
-// 8 个 CMP 站点的静态偏移（相对 image base）
-static const uint64_t s_cmp_sites[8] = {
-    XRC_CMP_B_PURE, XRC_CMP_B_FAR, XRC_CMP_B_LOST, XRC_CMP_B_MISS,
-    XRC_CMP_A_PURE, XRC_CMP_A_FAR, XRC_CMP_A_LOST, XRC_CMP_A_MISS,
-};
-// 上次写入的阈值（避免重复 patch）
-static _Atomic(int) s_applied[8] = {0,0,0,0,0,0,0,0};
-static _Atomic(bool) s_patch_ok = false;
-static _Atomic(bool) s_patch_tried = false;
+static xrc_commit_t    s_commit    = NULL;   // = image_base + XRC_OFF_JUDGE_COMMIT_FN
+static xrc_commit_ln_t s_commit_ln = NULL;   // = image_base + XRC_OFF_JUDGE_COMMIT_LN_FN
 
-// 配置阈值（ms）——UI 四档写入（顺序：Pure/Far/Lost/Miss）
+// 阈值（ms），UI 四档写入（顺序 Pure/Far/Lost/Miss → 写入时映射，见 set_windows）
 static _Atomic(int) s_th[4] = {25, 50, 100, 120};
+static _Atomic(float) s_window_scale = 1.0f;
 static _Atomic(uint32_t) s_call_total = 0;
+static _Atomic(uint32_t) s_stat_pure = 0, s_stat_far = 0, s_stat_lost = 0,
+                         s_stat_ln = 0, s_stat_miss = 0, s_stat_gated = 0;
 
-// 把一个 CMP Wn,#imm12 指令字改成新的 imm12（保留 Rn 与指令形态）
-static inline uint32_t s_remake_cmp(uint32_t orig, int imm) {
-    if (imm < 0) imm = 0;
-    if (imm > 0xFFF) imm = 0xFFF;          // imm12 上限
-    return (orig & ~(0xFFFu << 10)) | ((uint32_t)imm << 10);
-}
+static inline uint64_t rd64(uint64_t a) { return *(const uint64_t *)a; }
+static inline int32_t  rd32(uint64_t a) { return *(const int32_t *)a; }
+static inline uint8_t  rd8(uint64_t a)  { return *(const uint8_t *)a; }
 
-// 把 8 个站点写成配置值（返回成功数）。仅在值变化时实际写。
-static int s_apply_thresholds(uint64_t image_base) {
-    int pure = atomic_load(&s_th[0]);
-    int far  = atomic_load(&s_th[1]);
-    int lost = atomic_load(&s_th[2]);
-    int miss = atomic_load(&s_th[3]);
-    int want[8] = {pure, far, lost, miss,   // 分支 B
-                   pure, far, lost, miss};  // 分支 A
-
-    int written = 0;
-    for (int i = 0; i < 8; i++) {
-        int cur = atomic_load(&s_applied[i]);
-        if (cur == want[i]) continue;
-        uint64_t site = image_base + s_cmp_sites[i];
-        uintptr_t page = site & ~(uintptr_t)0x3FFF;
-        // 临时开写（COW 匿名页，绕过页签名）
-        if (mprotect((void *)page, 0x4000, PROT_READ | PROT_WRITE) != 0) {
-            if (!atomic_load(&s_patch_tried))
-                acc_flog(@"[judge] mprotect FAILED at %llx (errno=%d) — 改判不可用",
-                         site, errno);
-            return -1;
-        }
-        uint32_t *p = (uint32_t *)site;
-        uint32_t orig = *p;
-        *p = s_remake_cmp(orig, want[i]);
-        // 指令缓存同步（避免 ___clear_cache 符号依赖：用 sys_icache_invalidate）
-        extern void sys_icache_invalidate(void *, size_t);
-        sys_icache_invalidate((void *)site, 4);
-        mprotect((void *)page, 0x4000, PROT_READ | PROT_EXEC);
-        atomic_store(&s_applied[i], want[i]);
-        written++;
-    }
-    return written;
-}
-
-// 判定 handler：**不接管**——只在阈值变化时改写 8 个 CMP，然后直通原函数。
-// X0/X1/X2 原样保留（trampoline 的 BR 不碰它们）。
-static uint64_t s_xrc_judge_handler(uint64_t note_group, uint64_t note, int64_t ts) {
+// 判定核 handler（trampoline v2 契约：X0=ng, X1=note, X2=ts, X3=caller X6）
+static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint64_t a6) {
     uint32_t n = atomic_fetch_add(&s_call_total, 1);
+    if (!ng || !note) { atomic_fetch_add(&s_stat_gated, 1); return 0; }
 
-    if (!atomic_load(&s_patch_tried)) {
-        atomic_store(&s_patch_tried, true);
-        extern uint64_t xrc_image_base(void);
-        int w = s_apply_thresholds(xrc_image_base());
-        atomic_store(&s_patch_ok, w >= 0);
-        if (n < 6)
-            acc_flog(@"[judge] CMP patch applied: %d sites (ok=%d) th=%d/%d/%d/%d",
-                     w, atomic_load(&s_patch_ok),
-                     atomic_load(&s_th[0]), atomic_load(&s_th[1]),
-                     atomic_load(&s_th[2]), atomic_load(&s_th[3]));
-    } else if (n < 12) {
-        acc_flog(@"[judge] call#%u (passthrough, patched=%d)", n, atomic_load(&s_patch_ok));
+    // ---- 1. 前置门（与反汇编 loc_10091E6B4/E6C8 一致）----
+    uint64_t vt = rd64(note);
+    if (vt) {
+        uint64_t f64 = rd64(vt + 0x40);            // vtable[64]：(result & 1) → 提前 0
+        if (f64 && (((xrc_fn1_t)f64)(note) & 1)) {
+            atomic_fetch_add(&s_stat_gated, 1);
+            return 0;
+        }
+        uint64_t f48 = rd64(vt + 0x30);            // vtable[48]：!(result & 1) → 提前 0
+        if (f48 && !(((xrc_fn1_t)f48)(note) & 1)) {
+            atomic_fetch_add(&s_stat_gated, 1);
+            return 0;
+        }
     }
-    return s_orig_judge ? s_orig_judge(note_group, note, ts) : 0;
+
+    // ---- 2. 时间差 / 方向 ----
+    int32_t note_ms = rd32(note + XRC_NOTE_TIME_OFF);
+    uint64_t clk = rd64(ng + XRC_CLOCK_IN_NOTEGROUP_OFF);
+    if (!clk) { atomic_fetch_add(&s_stat_gated, 1); return 0; }
+    int32_t delta, dir;
+    uint32_t dirv;   // LN 落账的第 3 参：原始比较值（不是 1/2），零扩展 32 位
+    if (rd8(clk + XRC_CLK_FLAG45_OFF) == 1) {
+        int32_t cur = rd32(clk + XRC_CLK_ALT_START_OFF);   // [clk+32]
+        int32_t base = rd32(clk + XRC_CLK_BASE_OFF);       // [clk+40]
+        int32_t d = note_ms - cur + base;
+        delta = d < 0 ? -d : d;
+        int32_t w4 = cur - base;                           // SUB W4,W10,W11
+        dirv = (uint32_t)w4;
+        dir = (w4 >= note_ms) ? 2 : 1;
+    } else {
+        int32_t cur = rd32(clk + XRC_CLK_CUR_OFF);         // [clk+52]
+        int32_t base = rd32(clk + XRC_CLK_BASE_OFF);
+        int32_t lead = cur > 0 ? 0 : -XRC_CLK_NEG_LEAD_MS; // +3000（delta 用）
+        int32_t d = note_ms - cur + base + lead;
+        delta = d < 0 ? -d : d;
+        int32_t lead2 = cur > 0 ? 0 : XRC_CLK_NEG_LEAD_MS; // -3000（dir 用）
+        int32_t w4 = (cur - base) + lead2;
+        dirv = (uint32_t)w4;
+        dir = (w4 >= note_ms) ? 2 : 1;
+    }
+
+    // ---- 3. 出口（阈值运行时读；调用对象现场读取）----
+    int t_pure = atomic_load(&s_th[0]);
+    int t_far  = atomic_load(&s_th[1]);
+    int t_lost = atomic_load(&s_th[2]);
+    int t_miss = atomic_load(&s_th[3]);
+
+    int grade = -1;
+    if (delta < t_pure)      grade = 0;
+    else if (delta < t_far)  grade = 1;
+    else if (delta < t_lost) grade = 2;
+    else if (delta <= t_miss) grade = 3;   // LN/近失落账路径（非 Miss）
+
+    if (grade == 3) {
+        // loc_10091E850：commit_ln(*(ng+0x38), note, w4) + fx[0](fx, note)
+        // w4 = 原始比较值（零扩展），不是 1/2 —— 见笔记 §1.2。
+        uint64_t stats = rd64(ng + XRC_OFF_JUDGE_COMMIT_OBJ);
+        uint64_t fx    = rd64(ng + XRC_OFF_JUDGE_FX_OBJ);
+        if (s_commit_ln && stats) s_commit_ln(stats, note, (uint64_t)dirv);
+        if (fx) {
+            uint64_t f0 = rd64(rd64(fx));       // vtable[0]
+            if (f0) ((xrc_fn1_t)f0)(fx, note);  // 实际是 2 参（x1=note）
+        }
+        atomic_fetch_add(&s_stat_ln, 1);
+        return 1;
+    }
+    if (grade >= 0) {
+        // loc_10091E790/E7D4/E818：commit(*(ng+0x38), note, grade, dir, ts, a6)
+        //                          + fx[1](fx, note, grade, dir); return 1
+        uint64_t stats = rd64(ng + XRC_OFF_JUDGE_COMMIT_OBJ);
+        uint64_t fx    = rd64(ng + XRC_OFF_JUDGE_FX_OBJ);
+        if (s_commit && stats)
+            s_commit(stats, note, (uint64_t)(uint32_t)grade, (uint64_t)(uint32_t)dir,
+                     (uint64_t)ts, a6);
+        if (fx) {
+            uint64_t f1 = rd64(rd64(fx) + 8);   // vtable[1]
+            if (f1)
+                ((xrc_commit_t)f1)(fx, note, (uint64_t)(uint32_t)grade,
+                                   (uint64_t)(uint32_t)dir, 0, 0);
+        }
+        if (grade == 0)      atomic_fetch_add(&s_stat_pure, 1);
+        else if (grade == 1) atomic_fetch_add(&s_stat_far, 1);
+        else                 atomic_fetch_add(&s_stat_lost, 1);
+        return 1;
+    }
+
+    // 超界 → Miss（原函数 return 0，不消费、不落账、无特效）
+    atomic_fetch_add(&s_stat_miss, 1);
+    if (n < 20)
+        acc_flog(@"[judge] #%u MISS passthru d=%d th=%d/%d/%d/%d",
+                 n, delta, t_pure, t_far, t_lost, t_miss);
+    return 0;
 }
 
-// 阈值更新（UI 调用）——标脏，下次判定时写入
-void xrc_judge_apply_thresholds(void) {
-    extern uint64_t xrc_image_base(void);
-    // 重置 applied 以强制重写
-    for (int i = 0; i < 8; i++) atomic_store(&s_applied[i], 0x7FFFFFFF);
-    atomic_store(&s_patch_ok, s_apply_thresholds(xrc_image_base()) >= 0);
+void xrc_judge_log_stats(void) {
+    acc_flog(@"[judge] calls=%u pure=%u far=%u lost=%u ln=%u miss=%u gated=%u",
+             atomic_load(&s_call_total), atomic_load(&s_stat_pure),
+             atomic_load(&s_stat_far), atomic_load(&s_stat_lost),
+             atomic_load(&s_stat_ln), atomic_load(&s_stat_miss),
+             atomic_load(&s_stat_gated));
 }
 #endif
 
-// 窗口缩放（由配置四档换算：scale = (max+pure+far+lost)/270.0，默认 25/50/100/120）
+// 窗口缩放（配置四档 → scale，仅 UI 展示用；生效靠 handler 的 t_* 阈值）
 void xrc_judge_set_scale(float scale) {
     if (scale < 0.1f) scale = 0.1f;
     if (scale > 5.0f) scale = 5.0f;
@@ -151,15 +193,18 @@ bool xrc_judge_install(uint64_t image_base) {
         acc_flog(@"judge stub: slot anchor missing (stub not injected?)");
         return false;
     }
+    // 落账/特效函数：绝对地址 = image_base + 静态偏移（thin 二进制无 slice 差）
+    s_commit    = (xrc_commit_t)(image_base + XRC_OFF_JUDGE_COMMIT_FN);
+    s_commit_ln = (xrc_commit_ln_t)(image_base + XRC_OFF_JUDGE_COMMIT_LN_FN);
+    // 校验落账函数 prologue 特征（跨版本防护）：sub_100ACB880 首指令 LDR X8,[X0]
+    // 后跟 vtable[32] 门；这里只做"非零 + 可读"的最低校验，避免误注册。
+    if (!s_commit || !s_commit_ln) return false;
+
     struct xrc_slot *slot = (struct xrc_slot *)slot_va;
-    // 原函数入口：跳过 handler 分派，直接进 trampoline 的 native 重放区
-    // （ADRP/ADD/LDR/CBZ/BR 之后的 3 条重放指令 —— 见 XRCProfile 布局注释）
-    s_orig_judge = (uint64_t (*)(uint64_t, uint64_t, int64_t))
-                   (image_base + XRC_STUB_TRAMP_NATIVE_OFF);
-    // 完全接管：写 handler 指针即接管；写 0 即原生直通（trampoline 保证）。
     slot->handler = (void *)&s_xrc_judge_handler;
     atomic_store(&s_judge_active, true);
-    acc_flog(@"judge handler installed at slot %p (native=%p)", (void *)slot, (void *)s_orig_judge);
+    acc_flog(@"judge handler installed: slot=%p commit=%p commit_ln=%p",
+             (void *)slot, (void *)s_commit, (void *)s_commit_ln);
     return true;
 #else
     (void)image_base;
@@ -168,28 +213,20 @@ bool xrc_judge_install(uint64_t image_base) {
 }
 
 void xrc_judge_set_windows(int max_ms, int pure_ms, int far_ms, int lost_ms) {
-    atomic_store(&s_win_max,  max_ms);
-    atomic_store(&s_win_pure, pure_ms);
-    atomic_store(&s_win_far,  far_ms);
-    atomic_store(&s_win_lost, lost_ms);
-#if XRC_HAS_JUDGE_STUB
-    // 新架构：UI 四档语义映射到判定级联
-    //   Max  → Pure 上界（原 25）
-    //   Pure → Far  上界（原 50）
-    //   Far  → Lost 上界（原 100）
-    //   Lost → 上界/Miss 分界（原 120）
+    // UI 四档语义 → 判定级联阈值（与旧 CMP 架构的映射保持一致）：
+    //   Max  → Pure 上界（默认 25）
+    //   Pure → Far  上界（默认 50）
+    //   Far  → Lost 上界（默认 100）
+    //   Lost → 近失/Miss 分界（默认 120）
     atomic_store(&s_th[0], max_ms);
     atomic_store(&s_th[1], pure_ms);
     atomic_store(&s_th[2], far_ms);
     atomic_store(&s_th[3], lost_ms);
-    // 立即生效（改写 8 个 CMP）
-    xrc_judge_apply_thresholds();
-#endif
 }
 
 void xrc_judge_get_windows(int *max_ms, int *pure_ms, int *far_ms, int *lost_ms) {
-    if (max_ms)  *max_ms  = atomic_load(&s_win_max);
-    if (pure_ms) *pure_ms = atomic_load(&s_win_pure);
-    if (far_ms)  *far_ms  = atomic_load(&s_win_far);
-    if (lost_ms) *lost_ms = atomic_load(&s_win_lost);
+    if (max_ms)  *max_ms  = atomic_load(&s_th[0]);
+    if (pure_ms) *pure_ms = atomic_load(&s_th[1]);
+    if (far_ms)  *far_ms  = atomic_load(&s_th[2]);
+    if (lost_ms) *lost_ms = atomic_load(&s_th[3]);
 }
