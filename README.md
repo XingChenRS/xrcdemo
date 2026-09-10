@@ -80,4 +80,7 @@ Arcaea iOS 侧载 dylib：无越狱运行时插件。xrc 工作区 `projects/run
 ## 6. 构建
 
 - 本地：Theos（`make`），产物 `.theos/obj/xrcdemo.dylib`。
+  首次需准备依赖：`git clone --depth 1 https://github.com/remember17/WHToast.git /tmp/whtoast && mkdir -p WHToast && cp -r /tmp/whtoast/WHToast WHToast/WHToast`
+  （CI 自动完成此步；WHToast 不做 git submodule，保持仓库自包含）。
 - CI：GitHub Actions（[build-tweak.yml](.github/workflows/build-tweak.yml)），三级缓存（Theos / iOS SDK / ellekit），产物 `libxrcdemo.dylib` + `libellekit.dylib`。
+- 发布分支：`publish-beta1.0` = 单提交的干净发布快照（无历史）；开发轨迹在 `main`。新仓首推用发布分支。
