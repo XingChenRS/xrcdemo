@@ -1,4 +1,4 @@
-name: Build ArcDemo
+name: Build xrcdemo
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
       THEOS_SDK: iPhoneOS14.5.sdk
       THEOS_VER: 5280bd0
       EK_VER: ellekit-1.2
-      DYLIB_OUT: libArcDemo.dylib
+      DYLIB_OUT: libxrcdemo.dylib
 
     steps:
       - name: Checkout
@@ -57,14 +57,14 @@ jobs:
           printf '#define XRC_BUILD_STAMP "%s-%s"\n' "${GITHUB_SHA:0:7}" "$(date -u +%m%d%H%M)" > xrc_build_stamp.h
           make
           mkdir -p out
-          DYLIB="$(find .theos/obj -maxdepth 2 -name 'ArcDemo.dylib' -not -path '*.dSYM*' | head -n1)"
-          if [ -z "$DYLIB" ]; then echo "ArcDemo.dylib not found"; exit 1; fi
+          DYLIB="$(find .theos/obj -maxdepth 2 -name 'xrcdemo.dylib' -not -path '*.dSYM*' | head -n1)"
+          if [ -z "$DYLIB" ]; then echo "xrcdemo.dylib not found"; exit 1; fi
           cp "$DYLIB" "out/${DYLIB_OUT}"
           install_name_tool -change \
             /Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate \
             @rpath/libellekit.dylib \
             "out/${DYLIB_OUT}"
-          install_name_tool -id @rpath/libArcDemo.dylib "out/${DYLIB_OUT}"
+          install_name_tool -id @rpath/libxrcdemo.dylib "out/${DYLIB_OUT}"
           ldid -S "out/${DYLIB_OUT}"
           otool -L "out/${DYLIB_OUT}"
           file "out/${DYLIB_OUT}"
@@ -105,8 +105,8 @@ jobs:
       - name: Upload dylibs
         uses: actions/upload-artifact@v4
         with:
-          name: libArcDemo-sideload
+          name: libxrcdemo-sideload
           path: |
-            out/libArcDemo.dylib
+            out/libxrcdemo.dylib
             out/libellekit.dylib
           if-no-files-found: error

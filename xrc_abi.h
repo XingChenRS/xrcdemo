@@ -1,4 +1,4 @@
-// xrc_abi.h — ArcDemo 与注入器（inject.py）共享的 ABI 契约。
+// xrc_abi.h — xrcdemo dylib 与注入器（inject.py）共享的 ABI 契约。
 // 未来抽取到 projects/core 的候选文件：slot 布局 + info blob + handler 签名。
 #pragma once
 

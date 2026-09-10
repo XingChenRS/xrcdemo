@@ -21,7 +21,7 @@ Arcaea iOS 侧载 dylib：无越狱运行时插件。xrc 工作区 `projects/run
 ### 安装（侧载）
 
 1. 用 `inject.py --stub` 对原始 `Arc-mobile` 打桩（写入跳板 + slot + info blob），产出打桩主程序；
-2. 将 `libArcDemo.dylib` 与 `libellekit.dylib` 放入 `Payload/Arc-mobile.app/Frameworks/`；
+2. 将 `libxrcdemo.dylib` 与 `libellekit.dylib` 放入 `Payload/Arc-mobile.app/Frameworks/`；
 3. 重签名并安装；
 4. 验证：日志首行出现 `==== xrcdemo beta1.0 build <stamp>`，且 `[probe] summary: stub=1 judge=1 gp=1 mtp=1`。
 
@@ -79,5 +79,5 @@ Arcaea iOS 侧载 dylib：无越狱运行时插件。xrc 工作区 `projects/run
 
 ## 6. 构建
 
-- 本地：Theos（`make`），产物 `.theos/obj/ArcDemo.dylib`。
-- CI：GitHub Actions（[build-tweak.yml](.github/workflows/build-tweak.yml)），三级缓存（Theos / iOS SDK / ellekit），产物 `libArcDemo.dylib` + `libellekit.dylib`。
+- 本地：Theos（`make`），产物 `.theos/obj/xrcdemo.dylib`。
+- CI：GitHub Actions（[build-tweak.yml](.github/workflows/build-tweak.yml)），三级缓存（Theos / iOS SDK / ellekit），产物 `libxrcdemo.dylib` + `libellekit.dylib`。

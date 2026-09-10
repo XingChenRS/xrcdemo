@@ -1,5 +1,5 @@
 """
-Inject libArcDemo.dylib + libellekit.dylib into Arc-mobile.app.
+Inject libxrcdemo.dylib + libellekit.dylib into Arc-mobile.app.
 
 Two independent stages:
 
@@ -26,8 +26,8 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 APP = os.path.join(ROOT, "ios", "Payload", "Arc-mobile.app")
 MAIN = os.path.join(APP, "Arc-mobile")
 FW_DIR = os.path.join(APP, "Frameworks")
-DYLIB_NAMES = ["libArcDemo.dylib", "libellekit.dylib"]
-INJECT_NAME = "@rpath/libArcDemo.dylib"
+DYLIB_NAMES = ["libxrcdemo.dylib", "libellekit.dylib"]
+INJECT_NAME = "@rpath/libxrcdemo.dylib"
 
 LC_LOAD_DYLIB = 0x8000000C
 LC_RPATH = 0x8000001C
@@ -297,7 +297,7 @@ def insert_load_commands_inplace(data: bytearray, base: int) -> list[str]:
 
 
 def find_dylibs() -> list[str]:
-    candidates = [ROOT, os.path.join(ROOT, "ci-artifacts", "libArcDemo-sideload")]
+    candidates = [ROOT, os.path.join(ROOT, "ci-artifacts", "libxrcdemo-sideload")]
     found = []
     for name in DYLIB_NAMES:
         path = None
@@ -327,7 +327,7 @@ def check_binary(path: str) -> int:
     print(f"entry      : {'PATCHED (ADRP/ADD/BR)' if has_stub else 'original (STP ...)'}")
     print(f"trampoline : {'v2 (MOV X3,X6 present)' if stub_v2 else 'v1 or absent'}")
     print(f"slot       : {slot if slot else '-'}")
-    print(f"dylib LC   : {'@rpath/libArcDemo.dylib present' if has_dylib else 'MISSING'}")
+    print(f"dylib LC   : {'@rpath/libxrcdemo.dylib present' if has_dylib else 'MISSING'}")
     if has_stub and not has_dylib:
         print("=> INVALID: stub without dylib (features would be dead)")
         ok = False
