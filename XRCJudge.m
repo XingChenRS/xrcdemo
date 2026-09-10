@@ -124,7 +124,6 @@ void xrc_judge_apply_thresholds(void) {
     atomic_store(&s_patch_ok, s_apply_thresholds(xrc_image_base()) >= 0);
 }
 #endif
-#endif
 
 // 窗口缩放（由配置四档换算：scale = (max+pure+far+lost)/270.0，默认 25/50/100/120）
 void xrc_judge_set_scale(float scale) {
