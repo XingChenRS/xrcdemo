@@ -72,23 +72,46 @@ static void *s_valid_note_group(void *scene) {
     return ng;
 }
 
-// ---- retry 监视器（2026-09-10）----
-// 用户需求：在游戏暂停菜单 retry 后自动跳回练习起点（循环区间 A / 上次 seek 目标）。
-// 不做 retry 按钮逆向——用**时钟跳变检测**：retry 后谱面钟从近曲尾跌回曲首，
-// 帧间跳变 > 1s 即判为 retry（倒带回绕同理，恰好是期望行为）。
-// 一次性哨兵：只响应一次，然后解除（用户手动拖走不会被反复拉回）。
-#define XRC_RETRY_SEEK_JUMP_MS   5000    // 倒带判定阈值（帧间负跳变）
-static _Atomic(uint32_t) s_resume_ms = 0;      // 0 = 无监视
-static _Atomic(bool)     s_last_valid = false;
-static int32_t           s_last_pos = 0;
-static _Atomic(uint64_t) s_resume_fired_us = 0;
+// ---- retry 监视器 v2（2026-09-10，确定性检测）----
+// 用户流程：勾选开关 → 开启循环或 seek 定位（capture=目标点）→ 游戏中暂停 → Retry。
+// 判据（比时钟跳变确定得多）：**音频位置的帧间大回跳**——retry 重建场景会让音频
+// 从曲尾/当前点回到曲首（jump < -10s），单点演奏不可能产生。
+// 触发后写一个 pending seek（目标=capture）；deferred 状态机在**新场景**的下一帧
+// 才执行（旧场景已被 retry 销毁，同一帧不可用）。执行后解除（一次性）。
+#define XRC_RETRY_AUDIO_JUMP_MS  (-10000)   // 音频帧间回跳阈值
+static _Atomic(uint32_t) s_capture_ms = 0;      // 目标点（seek/循环 A 写入）；0 = 未武装
+static _Atomic(bool)     s_cap_valid = false;
+static int32_t           s_prev_audio_ms = -1;
+static _Atomic(uint32_t) s_retry_armed_gen = 0; // 触发计数（诊断）
 
 void xrc_gameplay_set_resume_ms(uint32_t ms) {
-    atomic_store(&s_resume_ms, ms);
-    atomic_store(&s_last_valid, false);        // 重新基准，避免陈旧跳变误触发
-    acc_flog(@"resume watch armed: %u ms", ms);
+    atomic_store(&s_capture_ms, ms);
+    atomic_store(&s_cap_valid, false);
+    s_prev_audio_ms = -1;
+    acc_flog(@"retry watch armed: %u ms", ms);
 }
-uint32_t xrc_gameplay_get_resume_ms(void) { return atomic_load(&s_resume_ms); }
+uint32_t xrc_gameplay_get_resume_ms(void) { return atomic_load(&s_capture_ms); }
+
+// 帧内调用（note_group 有效时）：音频位置回跳检测。
+static void s_retry_watch_tick(void) {
+    if (atomic_load(&s_capture_ms) == 0) { s_prev_audio_ms = -1; return; }
+    int32_t pos = (int32_t)xrc_player_position_ms();
+    if (pos < 0) return;
+    if (!atomic_load(&s_cap_valid)) {
+        s_prev_audio_ms = pos;
+        atomic_store(&s_cap_valid, true);
+        return;
+    }
+    int32_t jump = pos - s_prev_audio_ms;
+    s_prev_audio_ms = pos;
+    if (jump < XRC_RETRY_AUDIO_JUMP_MS) {
+        uint32_t target = atomic_load(&s_capture_ms);
+        if (xrc_gameplay_request(XRC_OP_SEEK, target)) {
+            atomic_fetch_add(&s_retry_armed_gen, 1);
+            acc_flog(@"retry detected (audio jump %d) -> queued seek %u", jump, target);
+        }
+    }
+}
 
 // 在游戏循环内执行 pending（self = 当前活场景）。
 static void s_exec_pending(void *self) {
@@ -149,15 +172,16 @@ static void s_exec_pending(void *self) {
             *base_off += cur_ms - (int32_t)ms;
         }
         s_gp_last_real_us = 0;
-        // 任何 seek（含循环回绕）都刷新练习起点：retry 后跳到这里。
-        atomic_store(&s_resume_fired_us, xrc_real_now_us());
-        xrc_gameplay_set_resume_ms(ms);
         acc_flog(@"seek executed: ms=%u (cur was %d)", ms, cur_ms);
     }
 
     if (op == XRC_OP_SEEK_REPLAY || op == XRC_OP_LOOP_REWIND) {
-        // 循环回绕 / 重播：解除 retry 监视（回绕本身已带位置，不需要再拉回）
-        xrc_gameplay_set_resume_ms(0);
+        // 循环回绕/重播：位置已由 seek 平移给出，监视保持武装（用户可能随后 retry）；
+        // 但把音频基准重置，避免回绕本身被识别成 retry。
+        if (atomic_load(&s_capture_ms) != 0) {
+            s_prev_audio_ms = (int32_t)xrc_player_position_ms();
+            atomic_store(&s_cap_valid, true);
+        }
         acc_flog(@"replay executed via seek (op=%u)", op);
     }
 }
@@ -258,50 +282,25 @@ void xrc_gameplay_update(void *self, uint64_t a2, uint64_t a3, uint64_t a4, uint
         }
         s_exec_pending(self);   // deferred 操作（seek/转场）在活场景循环内执行
 
-        // retry 监视：帧间负跳变 > 阈值 → 判定为 retry/回绕 → 一次性 seek 回起点。
+        // retry 监视 v2（音频回跳）；循环卡死恢复保留。
         if (note_group) {
+            s_retry_watch_tick();
+            // 循环卡死恢复：pos 停滞超 1.5s 且位于 [A,B) 内 → 强制回 A
             int32_t pos = xrc_chart_clock_ms(note_group);
-            if (atomic_load(&s_resume_ms) != 0) {
-                if (!atomic_load(&s_last_valid)) {
-                    s_last_pos = pos;
-                    atomic_store(&s_last_valid, true);
-                } else {
-                    int32_t jump = pos - s_last_pos;
-                    s_last_pos = pos;
-                    uint32_t target = atomic_load(&s_resume_ms);
-                    if (jump < -(int32_t)XRC_RETRY_SEEK_JUMP_MS) {
-                        // 目标已过去（例如自然倒带撞到 A）→ 直接解除，不拉回
-                        if ((uint32_t)pos >= target) {
-                            atomic_store(&s_resume_ms, 0);
-                            acc_flog(@"resume watch released (pos %d >= %u)", pos, target);
-                        } else {
-                            uint64_t now_us = xrc_real_now_us();
-                            uint64_t last = atomic_load(&s_resume_fired_us);
-                            if (now_us - last > 1000000ULL) {   // ≥1s 防抖
-                                atomic_store(&s_resume_fired_us, now_us);
-                                if (xrc_gameplay_request(XRC_OP_SEEK, target))
-                                    acc_flog(@"retry detected (jump %d) -> resume seek %u", jump, target);
-                            }
-                        }
-                    }
+            static int32_t s_stall_pos = 0;
+            static uint64_t s_stall_since = 0;
+            uint64_t now_us = xrc_real_now_us();
+            if (pos != s_stall_pos) {
+                s_stall_pos = pos;
+                s_stall_since = now_us;
+            } else if (s_stall_since && now_us - s_stall_since > 1500000ULL) {
+                uint32_t a = 0, b = 0;
+                xrc_loop_get_range(&a, &b);
+                if (xrc_loop_get_enabled() && pos < (int32_t)b - 200) {
+                    if (xrc_gameplay_request(XRC_OP_LOOP_REWIND, a))
+                        acc_flog(@"loop stall at %d -> forced rewind to %u", pos, a);
                 }
-            } else {
-                // 循环卡死恢复：pos 停滞超 1.5s = 卡在【A,B) 内不动（时钟没被重置）→ 强制回 A
-                static int32_t s_stall_pos = 0;
-                static uint64_t s_stall_since = 0;
-                uint64_t now_us = xrc_real_now_us();
-                if (pos != s_stall_pos) {
-                    s_stall_pos = pos;
-                    s_stall_since = now_us;
-                } else if (s_stall_since && now_us - s_stall_since > 1500000ULL) {
-                    uint32_t a = 0, b = 0;
-                    xrc_loop_get_range(&a, &b);
-                    if (xrc_loop_get_enabled() && pos < (int32_t)b - 200) {
-                        if (xrc_gameplay_request(XRC_OP_LOOP_REWIND, a))
-                            acc_flog(@"loop stall at %d -> forced rewind to %u", pos, a);
-                    }
-                    s_stall_since = now_us;   // 重置，避免连环触发
-                }
+                s_stall_since = now_us;
             }
         }
     }

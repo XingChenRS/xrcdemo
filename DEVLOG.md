@@ -2,6 +2,27 @@
 
 ArcDemo 演进记录。能力状态标记与 [xrc 能力账本](../../research/notes/xrc-arcaea-capability-ledger-2026-08-31.md) 对齐（XRC-R 运行中 / XRC-V 已验证 / XRC-S 静态闭环 / PROTO 失败原型 / OPEN 未闭合）。
 
+## 2026-09-10 — v8.9.5：retry 监视改确定性（音频回跳）+ retry 重建链逆向落笔
+
+**决策（用户问「直调场景重置 vs 手动 retry + 跳转」）**：保留游戏自己的 retry——它走
+"销毁旧场景 → executor 工厂重建"全序，安全；直调转场路线已证槽 178 是 this 调整 thunk
+（`sub_100CAA0E4: SUB X0,#0x2B0; B sub_100CA9590`），旧实现传 GameScene 指针 = 错位调用，
+**这是当年 UAF 的另一半根因**。直调路线永久废弃。
+
+**retry 全链（已证）**：按钮点击 `sub_100948694` → ①`delegate->vtable[0x560](d,0)`
+→ ②`sub_100B69644(GameModel, action 13, 1, 0, 0)` → `sub_100B677A8` 查 action 名表 →
+`(*(GameModel+0x280))->vtable[14](executor, name, rest, 0, 0, 0, -1.0)`（重开工厂）
+→ ③`PauseLayer+0x2A0->vtable[2](delegate, 0)`。PauseLayer 工厂 `sub_100BACD34`。
+
+**"续玩"机制（已证）**：`sub_100CA118C`（场景构造）末段按音乐当前位置写 `self+1140`
+并 `sub_1009204E4(note_group, T, mode)` 跳过/快进 T 前音符——退出重进、异常曲转场都靠它。
+
+**v8.9.5 实现**：retry 监视从"时钟跳变猜测"改为"**音频位置帧间回跳 < -10s**"检测
+（retry 重建必然令音频回曲首，单点演奏不可能产生），触发后写 pending seek（目标=capture），
+由 deferred 状态机在**新场景下一帧**执行。开关语义变为显式 capture：ON = 记录当前
+循环 A / 播放位置为回跳目标并弹 toast 确认；OFF = 解除。循环回绕不再解除监视，
+仅重置音频基准防误判。
+
 ## 2026-09-10 — v8.9.4：判定全失效根因（门2 方向）+ retry 自动复位
 
 **判定整谱不判（唯一根因）**：handler 前置门 2（vtable 槽 6）方向写反。反汇编

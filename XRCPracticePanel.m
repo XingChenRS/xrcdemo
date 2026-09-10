@@ -517,12 +517,17 @@
 - (void)toggleRetryResume {
     if (xrc_gameplay_get_resume_ms() != 0) {
         xrc_gameplay_set_resume_ms(0);   // 解除
+        [WHToast showMessage:@"Reset on Retry OFF" duration:0.8 finishHandler:^{}];
     } else {
-        // 起点 = 循环 A（若已设）否则当前进度
+        // capture 目标点 = 优先：已设循环的 A；否则当前播放位置
         uint32_t a = 0, b = 0;
         xrc_loop_get_range(&a, &b);
         uint32_t target = (b > a + 1000) ? a : xrc_player_position_ms();
         xrc_gameplay_set_resume_ms(target);
+        uint32_t cs = target / 1000;
+        [WHToast showMessage:[NSString stringWithFormat:
+            @"Reset on Retry ON -> resume at %02u:%02u", cs/60, cs%60]
+                    duration:1.2 finishHandler:^{}];
     }
     [self refresh];
 }
