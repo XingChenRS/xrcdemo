@@ -52,12 +52,13 @@ static _Atomic(int) s_th_miss = 120;
 
 static _Atomic(uint32_t) s_call_total = 0;
 
-// 落账函数（note_group+56 的对象，grade, dir）—— 与原函数一致地调用
-typedef void (*commit_fn)(uint64_t, uint64_t, int, int);
+// 落账函数（note_group+56 的对象，note, grade, dir, timestamp, ?）—— 6 参
+// a5 = 判定时刻的游戏时钟 ms（commit 内部用它算 a5 - note_time 做统计）
+typedef void (*commit_fn)(uint64_t, uint64_t, int, int, int64_t, int64_t);
 static commit_fn s_commit = NULL;
 
-// 判定 handler：X0 = note_group, X1 = note（见 sub_10091E684 签名 a1=note_group, a2=note）
-static uint64_t s_xrc_judge_handler(uint64_t note_group, uint64_t note) {
+// 判定 handler：X0 = note_group, X1 = note, X2 = 判定时间戳（调用方常未显式传）
+static uint64_t s_xrc_judge_handler(uint64_t note_group, uint64_t note, int64_t ts) {
     uint32_t n = atomic_fetch_add(&s_call_total, 1);
     if (!note_group || !note) return 0;
 
@@ -66,19 +67,21 @@ static uint64_t s_xrc_judge_handler(uint64_t note_group, uint64_t note) {
     if (!clk) return 0;
     int32_t note_time = *(int32_t *)(note + XRC_NOTE_TIME_OFF);
 
-    int32_t delta, dir;
+    // 当前游戏时钟（与原函数内部同构读数）
+    int32_t now_ms;
     if (*(uint8_t *)(clk + XRC_CLK_FLAG45) & 1) {
-        int32_t v8 = *(int32_t *)(clk + XRC_CLK_ALT_START);
-        int32_t v9 = *(int32_t *)(clk + XRC_CLK_BASE);
-        delta = note_time - v8 + v9;
-        dir = ((v8 - v9) < note_time) ? 1 : 2;
+        now_ms = *(int32_t *)(clk + XRC_CLK_ALT_START) - *(int32_t *)(clk + XRC_CLK_BASE);
     } else {
-        int32_t v13 = *(int32_t *)(clk + XRC_CLK_CUR);
-        int32_t v15 = *(int32_t *)(clk + XRC_CLK_BASE);
-        int32_t off = (v13 <= 0) ? 3000 : 0;
-        delta = note_time - v13 + v15 + off;
-        dir = ((v13 - v15 + (v13 <= 0 ? -3000 : 0)) < note_time) ? 1 : 2;
+        int32_t v = *(int32_t *)(clk + XRC_CLK_CUR);
+        int32_t off = (v <= 0) ? XRC_CLK_NEG_LEAD_MS : 0;
+        now_ms = v - *(int32_t *)(clk + XRC_CLK_BASE) + off;
     }
+    // 时间戳：调用方传了就沿用，否则用当前时钟（原函数内部路径也是这么取的）
+    int64_t judge_ts = ts;
+    if (judge_ts <= 0 || judge_ts > 0x7FFFFFFF) judge_ts = now_ms;
+
+    int32_t delta = note_time - now_ms;
+    int32_t dir = (now_ms < note_time) ? 1 : 2;   // early/late 方向
     if (delta < 0) delta = -delta;
 
     // 配置阈值级联（动态改判核心）
@@ -94,19 +97,19 @@ static uint64_t s_xrc_judge_handler(uint64_t note_group, uint64_t note) {
     else if (delta <= th_miss) grade = 3;    // Lost(长条)
     else {
         if (n < 8) acc_flog(@"[judge] MISS n=%u delta=%d note=%llx", n, delta, note);
-        return 0;                            // Miss（不消费）——与原函数一致
+        return 0;                            // Miss（不消费）
     }
 
-    // 前若干次调用全量打印（诊断"显示变了但计分没变"）
+    // 前若干次调用全量打印（诊断）
     if (n < 12) {
-        acc_flog(@"[judge] n=%u grade=%d delta=%d dir=%d th=%d/%d/%d/%d commit=%p ng56=%llx",
-                 n, grade, delta, dir, th_pure, th_far, th_lost, th_miss,
-                 (void *)s_commit, note_group ? *(uint64_t *)(note_group + 56) : 0);
+        acc_flog(@"[judge] n=%u grade=%d delta=%d dir=%d ts=%lld now=%d th=%d/%d/%d/%d commit=%p",
+                 n, grade, delta, dir, judge_ts, now_ms,
+                 th_pure, th_far, th_lost, th_miss, (void *)s_commit);
     }
 
-    // 落账（与原函数相同的调用：commit(*(note_group+56), note, grade, dir)）
+    // 落账（6 参，与原函数一致；a5 = 时间戳）
     if (s_commit)
-        s_commit(*(uint64_t *)(note_group + 56), note, grade, dir);
+        s_commit(*(uint64_t *)(note_group + 56), note, grade, dir, judge_ts, 0);
     return 1;   // 消费该 note
 }
 #endif
