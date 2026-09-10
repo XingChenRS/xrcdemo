@@ -51,6 +51,21 @@ STUB_ENTRY_EXPECT = bytes.fromhex("f85fbca9f65701a9f44f02a9")
 XRC_MAGIC = 0x58424331  # 'XRC1'
 XRC_INFO_VERSION = 2  # blob 版本：v2 = slot 24B + 判定链 ABI
 
+# ---- BRK 桩（实验形态，2026-09-11）----
+# 把目标指令原地改成 `BRK #0`（D4200000，4B 长度不变），dylib 用 SIGTRAP 处理器
+# 接住并把 PC 指向重放跳板。跳板 = 原始指令 + B 回 site+4，共 8B。
+# 与判定桩的 40B 跳板（fileoff 0x146800C..0x1468034）不重叠。
+BRK_INSN = struct.pack("<I", 0xD4200000)
+# (名称, site VA, replay VA) —— replay 必须落在 __TEXT 空白页且互不重叠
+BRK_HOOKS = [
+    ("applog_send", 0x100623AEC, 0x101468040),   # sub_100623AEC 入口（OnlineManager 槽 72）
+]
+# 重放跳板必须避免 PC 相关指令（ADRP/ADR/B/BL/CBZ/TBZ/LDR-literal）——
+# 跳板在别处执行，PC 相对寻址会算错。这里只做"显然安全"的粗筛并提示。
+_PC_REL_MASK_HINT = (
+    0x1F000000,  # B / BL 族（0x14000000 / 0x94000000）
+)
+
 # 静态偏移（VA - image base 0x100000000）
 GP_VTABLE_OFF   = 0x151D8C0   # GameScene vtable
 GP_UPDATE_OFF   = 0xCA7160    # 槽 103 每帧函数
@@ -169,6 +184,55 @@ def patch_judge_stub(data: bytearray) -> list[str]:
     patch = encode_adrp_add_br(STUB_ENTRY_VA, STUB_TRAMP_VA)
     data[entry_file:entry_file + 12] = patch
     logs.append(f"entry patched ({12}B) @ vm {STUB_ENTRY_VA:#x} -> tramp")
+    return logs
+
+
+def pc_relative_kind(w: int) -> str | None:
+    """返回 PC 相关指令的名称（不能在别处重放），否则 None。"""
+    if (w >> 26) in (0b000101, 0b100101):
+        return "B/BL"
+    if (w & 0x9F000000) in (0x10000000, 0x90000000):
+        return "ADR/ADRP"
+    if (w & 0x7E000000) == 0x34000000:
+        return "CBZ/CBNZ"
+    if (w & 0x7E000000) == 0x36000000:
+        return "TBZ/TBNZ"
+    if (w & 0x3B000000) == 0x18000000:
+        return "LDR-literal"
+    return None
+
+
+def patch_brk_hooks(data: bytearray) -> list[str]:
+    """把 BRK_HOOKS 里的每个 site 改成 `BRK #0`，并在 replay 处建重放跳板。
+
+    跳板 = 原始 4 字节 + `B site+4`。原始指令若 PC 相关则拒绝（在别处重放会算错）。
+    """
+    logs = []
+    base = fat_arm64_slice_offset(bytes(data))
+    for name, site_va, replay_va in BRK_HOOKS:
+        site_file = base + (site_va - 0x100000000)
+        replay_file = base + (replay_va - 0x100000000)
+        orig = bytes(data[site_file:site_file + 4])
+        if len(orig) != 4:
+            raise RuntimeError(f"brk[{name}]: site {site_va:#x} out of range")
+        if orig == BRK_INSN:
+            logs.append(f"brk[{name}]: already patched @ {site_va:#x}")
+            continue
+        w = struct.unpack("<I", orig)[0]
+        kind = pc_relative_kind(w)
+        if kind:
+            raise RuntimeError(
+                f"brk[{name}]: site insn {orig.hex()} is {kind} — not replay-safe"
+            )
+        tramp = orig + struct.pack("<I", encode_b(replay_va + 4, site_va + 4))
+        if bytes(data[replay_file:replay_file + len(tramp)]) != b"\0" * len(tramp):
+            raise RuntimeError(f"brk[{name}]: replay region not zero @ {replay_file:#x}")
+        data[replay_file:replay_file + len(tramp)] = tramp
+        data[site_file:site_file + 4] = BRK_INSN
+        logs.append(
+            f"brk[{name}]: {site_va:#x} -> BRK#0 (orig {orig.hex()}), "
+            f"replay @ {replay_va:#x}"
+        )
     return logs
 
 
@@ -327,6 +391,14 @@ def check_binary(path: str) -> int:
     print(f"entry      : {'PATCHED (ADRP/ADD/BR)' if has_stub else 'original (STP ...)'}")
     print(f"trampoline : {'v2 (MOV X3,X6 present)' if stub_v2 else 'v1 or absent'}")
     print(f"slot       : {slot if slot else '-'}")
+    for name, site_va, replay_va in BRK_HOOKS:
+        sf = base + (site_va - 0x100000000)
+        rf = base + (replay_va - 0x100000000)
+        insn = struct.unpack_from("<I", raw, sf)[0]
+        tramp_b = raw[rf:rf + 8]
+        print(f"brk[{name}]: site {insn:#010x} "
+              f"{'PATCHED' if insn == 0xD4200000 else 'original'}; "
+              f"replay {tramp_b.hex() if any(tramp_b) else 'empty'}")
     print(f"dylib LC   : {'@rpath/libxrcdemo.dylib present' if has_dylib else 'MISSING'}")
     if has_stub and not has_dylib:
         print("=> INVALID: stub without dylib (features would be dead)")
@@ -349,6 +421,7 @@ def main():
             sys.exit(1)
         sys.exit(check_binary(sys.argv[i + 1]))
     do_stub = "--stub" in sys.argv
+    do_brk = "--brk" in sys.argv
     if not os.path.isfile(MAIN):
         print(f"[!] main not found: {MAIN}")
         sys.exit(1)
@@ -386,6 +459,16 @@ def main():
             print(f"[!] stub: {e}")
             sys.exit(1)
         print("[i] stub patched — re-sign the app before installing")
+
+    if do_brk:
+        try:
+            logs = patch_brk_hooks(data)
+            for line in logs:
+                print(f"[+] {line}")
+        except RuntimeError as e:
+            print(f"[!] brk: {e}")
+            sys.exit(1)
+        print("[i] brk hook patched — re-sign the app before installing")
 
     with open(MAIN, "wb") as f:
         f.write(data)

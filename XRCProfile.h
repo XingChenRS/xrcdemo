@@ -118,3 +118,22 @@
 #define XRC_REG_PLAYER_OFF          (8)
 #define XRC_PLAYER_CHANNELS_OFF     (0x38)
 #define XRC_CHANNEL_ENTRY_PTR_OFF   (8)
+
+// ---------------- BRK 桩（实验：第二种插桩形态，替代 trampoline）----------------
+// 出处: 2026-09-11 机制验证。原理：注入器把目标指令原地改成 `BRK #0`（4B，长度
+// 不变），dylib 用 SIGTRAP 处理器接住，跑完自己的逻辑后把 ucontext 的 PC 指到
+// 预建的"重放跳板"（原始指令 + B 回 site+4），执行流无感继续。
+//
+// 与既有 trampoline v2 的取舍：
+//   trampoline v2 = 改函数入口前 12B 为 ADRP/ADD/BR，跳板重放前 3 条 —— 仅适用
+//                   函数入口，且要吃满入口 12 字节。
+//   BRK 桩        = 任意单条指令可打，补丁长度不变、不动入口结构；代价是引入
+//                   SIGTRAP 处理器（必须正确 chain 给前一个处理器，否则会吞掉
+//                   Swift 运行时 / Crashlytics 的陷阱）。
+//
+// 验证目标刻意选在 **applog 发送函数入口**（OnlineManager 槽 72）——既证明机制，
+// 又顺带回答"applog 何时触发"，且不碰改判/seek/循环/变速四项。
+#define XRC_HAS_BRK_HOOK            1
+#define XRC_BRK_APPLOG_SITE_OFF     (0x623AECULL)   // sub_100623AEC 入口（VA 0x100623AEC）
+#define XRC_BRK_APPLOG_REPLAY_OFF   (0x1468040ULL)  // 重放跳板（__TEXT 空白页，VA 0x101468040）
+#define XRC_BRK_MAX_SLOTS           8

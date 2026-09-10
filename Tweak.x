@@ -35,6 +35,7 @@
 #include "XRCGameplay.h"
 #include "XRCJudge.h"
 #include "XRCConfig.h"
+#include "XRCHook.h"
 
 extern UIApplication *UIApp;
 
@@ -193,6 +194,8 @@ static void doBootstrap(void) {
                 xrc_judge_log_stats();   // 安装成功 → 打一次基线统计
         } @catch (NSException *e) { xrc_log(@"judge EX: %@", e); }
         @try { xrc_probe_run(); }               @catch (NSException *e) { xrc_log(@"probe EX: %@", e); }
+        // BRK 桩：验证形态（见 XRCProfile.h）。处理器已在 %ctor 装好，这里只注册桩点。
+        @try { xrc_brk_setup(base); }           @catch (NSException *e) { xrc_log(@"brk EX: %@", e); }
         @try {
             static dispatch_once_t tw_once;
             dispatch_once(&tw_once, ^{
@@ -205,6 +208,18 @@ static void doBootstrap(void) {
             xrc_clock_set_rate((double)g_cfg.speeds[g_cfg.rate_index]);
         xrc_log(@"config path: %@", xrc_config_path());
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
+            // BRK 桩统计：只在计数变化时落一行（回答"applog 何时触发"）
+            static uint32_t last_brk[XRC_BRK_MAX_SLOTS];
+            int ns = xrc_brk_slot_count();
+            for (int i = 0; i < ns; i++) {
+                uint32_t h = xrc_brk_hits(i);
+                if (h != last_brk[i]) {
+                    xrc_log(@"[brk] %s hits=%u last=%.3fms",
+                            xrc_brk_slot_name(i), h,
+                            (double)xrc_brk_last_hit_us(i) / 1000.0);
+                    last_brk[i] = h;
+                }
+            }
             void *p = xrc_player_get();
             if (xrc_player_detect_change(p)) {
                 xrc_log(@"new song: player=%p", p);
@@ -251,6 +266,8 @@ static void onAppLaunched(CFNotificationCenterRef center, void *observer,
                        g_cfg.judge_far_ms + g_cfg.judge_lost_ms) / 270.0f;
         xrc_judge_set_scale(scale);
     } @catch (NSException *e) {}
+    // BRK 桩处理器尽早装（注入时已写死 BRK，越早接住越安全）；注册在 doBootstrap。
+    @try { xrc_brk_install(); } @catch (NSException *e) { xrc_log(@"brk install EX: %@", e); }
     CFNotificationCenterAddObserver(CFNotificationCenterGetLocalCenter(), NULL,
         onAppLaunched,
         (CFStringRef)UIApplicationDidFinishLaunchingNotification,
