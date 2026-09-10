@@ -32,18 +32,21 @@ INJECT_NAME = "@rpath/libArcDemo.dylib"
 LC_LOAD_DYLIB = 0x8000000C
 LC_RPATH = 0x8000001C
 
-# ---- judge stub constants (7.0.255) ----
-STUB_ENTRY_VA   = 0x1009D9ED8
-STUB_ENTRY_FILE = 0x9D9ED8
+# ---- judge stub constants (7.0.255, corrected 2026-09-10) ----
+# 判定核心 = sub_10091E684（整数 CMP 级联，与 6.13 sub_100870FD0 逐行同构）。
+# 此前误用 sub_1009D9ED8（特效显示链）——见
+# research/notes/ios-7.0.255-judgement-correction-2026-09-10.md
+STUB_ENTRY_VA   = 0x10091E684
+STUB_ENTRY_FILE = 0x91E684
 STUB_TRAMP_VA   = 0x10146800C
 STUB_TRAMP_FILE = 0x146800C
 STUB_SLOT_VA    = 0x10164AB28
 STUB_SLOT_FILE  = 0x164AB28
 STUB_INFO_VA    = 0x10164AB38   # slot + 16
 STUB_INFO_FILE  = 0x164AB38
-# expected first 3 insns at entry (file byte order; verified in IDA dwords
-# d10103ff=a90157f6=a9024ff4 as SUB SP,#0x30 / STP X22,X21 / STP X20,X19):
-STUB_ENTRY_EXPECT = bytes.fromhex("ff0301d1f65701a9f44f02a9")
+# expected first 3 insns at entry (file byte order; IDA dwords
+# a9bc5ff8=a90157f6=a9024ff4 as STP X24,X23 / STP X22,X21 / STP X20,X19):
+STUB_ENTRY_EXPECT = bytes.fromhex("f85fbca9f65701a9f44f02a9")
 
 XRC_MAGIC = 0x58424331  # 'XRC1'
 XRC_INFO_VERSION = 1
@@ -103,7 +106,6 @@ def build_trampoline() -> bytes:
     pc += 12
     out += struct.pack("<I", encode_b(pc, STUB_ENTRY_VA + 12))
     return bytes(out)
-
 
 def build_info_blob() -> bytes:
     """xrc_info 结构：magic + version + 6 个静态偏移 + reserved[8]。

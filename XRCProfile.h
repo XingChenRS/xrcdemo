@@ -33,13 +33,16 @@
 #define XRC_OFF_GP_UPDATE_FN       (0xCA7160ULL)    // 五参 (self,a2,a3,a4,a5)，同 6.13
 
 // ---------------- 桩点（改判） ----------------
-// 出处: 收敛版架构 spec §2（ABI 已确认：X0=note, X8=out_ptr, 无 sret）
+// 出处: research/notes/ios-7.0.255-judgement-correction-2026-09-10.md
+// 判定核心 = sub_10091E684（与 6.13 sub_100870FD0 逐行同构的整数 CMP 级联；
+// 此前误把 sub_1009D9ED8/表B 当判定——那是特效显示链，已更正）。
+// ABI: X0 = note_group, X1 = note；返回 1 = 消费该 note，0 = Miss
 #define XRC_HAS_JUDGE_STUB          1
-#define XRC_JUDGE_STUB_ENTRY_OFF    (0x9D9ED8ULL)   // sub_1009D9ED8（判定区间求值器，表 B 消费点）
-// 注入器在 __DATA 零填充尾部（fileoff 0x164AB28，对齐 8）写入 slot + info blob；
-// 注入后 dylib 优先读 info blob（magic 校验），编译期偏移仅作 fallback。
+#define XRC_JUDGE_STUB_ENTRY_OFF    (0x91E684ULL)   // sub_10091E684（判定核心，2 处直接 BL 调用）
+#define XRC_OFF_JUDGE_COMMIT_FN     (0xACB880ULL)   // sub_100ACB880（grade 落账）
+// 注入器在 __DATA 零填充尾部写入 slot + info blob
 #define XRC_JUDGE_SLOT_OFF          (0x164AB28ULL)
-#define XRC_INFO_OFF                (0x164AB38ULL)    // slot 之后 16 字节，128 字节结构
+#define XRC_INFO_OFF                (0x164AB38ULL)
 
 // note 字段（改判 handler 读；replay-chain 笔记 §3.2）
 #define XRC_NOTE_TYPE_OFF           28
