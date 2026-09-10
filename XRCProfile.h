@@ -41,8 +41,25 @@
 #define XRC_JUDGE_STUB_ENTRY_OFF    (0x91E684ULL)   // sub_10091E684（判定核心，2 处直接 BL 调用）
 #define XRC_OFF_JUDGE_COMMIT_FN     (0xACB880ULL)   // sub_100ACB880（grade 落账，普通）
 #define XRC_OFF_JUDGE_COMMIT_LN_FN  (0xACB6A4ULL)   // sub_100ACB6A4（grade 落账，长条）
-#define XRC_OFF_JUDGE_FX_OBJ        (64)            // note_group+64 = 特效对象（imm12=8×8）
+#define XRC_OFF_JUDGE_FX_OBJ        (64)            // note_group+64 = 特效对象
 #define XRC_OFF_JUDGE_COMMIT_OBJ    (56)            // note_group+56 = 判定计数对象
+// 桩 trampoline（inject.py 生成）：native 重放区位于 tramp+20
+// （布局：ADRP+ADD(8) LDR(4) CBZ(4) BR(4) → native 重放 3 条原指令 + B 回 entry+12）
+// 直通原函数逻辑 = 跳到 tramp+20（跳过 handler 分派）。
+#define XRC_STUB_TRAMP_OFF          (0x146800CULL)  // trampoline 静态偏移
+#define XRC_STUB_TRAMP_NATIVE_OFF   (XRC_STUB_TRAMP_OFF + 20)
+
+// 判定函数的 8 个 CMP 阈值站点（CMP Wn,#imm12；改判 = 改写 imm12）
+// 分支 B（分段钟，clk+45==1）：26/51/101/121
+#define XRC_CMP_B_PURE              (0x91E720ULL)
+#define XRC_CMP_B_FAR               (0x91E728ULL)
+#define XRC_CMP_B_LOST              (0x91E730ULL)
+#define XRC_CMP_B_MISS              (0x91E738ULL)
+// 分支 A（普通钟）：25/50/100/120
+#define XRC_CMP_A_PURE              (0x91E788ULL)
+#define XRC_CMP_A_FAR               (0x91E7CCULL)
+#define XRC_CMP_A_LOST              (0x91E810ULL)
+#define XRC_CMP_A_MISS              (0x91E848ULL)
 // 注入器在 __DATA 零填充尾部写入 slot + info blob
 #define XRC_JUDGE_SLOT_OFF          (0x164AB28ULL)
 #define XRC_INFO_OFF                (0x164AB38ULL)

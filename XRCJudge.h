@@ -17,5 +17,8 @@ void xrc_judge_get_windows(int *max_ms, int *pure_ms, int *far_ms, int *lost_ms)
 void xrc_judge_set_scale(float scale);
 float xrc_judge_get_scale(void);
 
+// 立即应用阈值（改写判定函数的 8 个 CMP 立即数）。UI 提交时调用。
+void xrc_judge_apply_thresholds(void);
+
 // 桩点是否真正激活（未打桩/未注册时为 false → UI 隐藏改判区）。
 bool xrc_judge_is_active(void);
