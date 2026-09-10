@@ -67,6 +67,20 @@ void xrc_config_write_dict(NSDictionary *d) {
     [d writeToFile:path atomically:YES];
 }
 
+BOOL xrc_cfg_seek_replay(void) {
+    NSMutableDictionary *p = xrc_config_dict();
+    return [p[@"seekReplay"] boolValue];
+}
+
+void xrc_config_set_current_speed(float v) {
+    NSMutableDictionary *p = xrc_config_dict();
+    NSArray *keys = p[@"speedKeys"];
+    NSInteger idx = [p[@"rateIndex"] integerValue];
+    if (!keys || idx < 0 || idx >= (NSInteger)keys.count) return;
+    p[keys[idx]] = @(v);
+    xrc_config_write_dict(p);
+}
+
 void xrc_config_normalize_judge(xrc_config_t *c) {
     if (c->judge_max_ms < 1) c->judge_max_ms = 1;
     if (c->judge_max_ms > 2000) c->judge_max_ms = 2000;

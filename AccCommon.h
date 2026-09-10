@@ -10,5 +10,4 @@ void acc_flog(NSString *fmt, ...);
 
 @class XRCFloatButton;
 extern XRCFloatButton *button;
-extern UIView        *menuView;
 @class AccMenuController;

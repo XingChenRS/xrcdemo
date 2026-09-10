@@ -12,6 +12,7 @@ ArcDemo_FILES += XRCGameplay.m
 ArcDemo_FILES += XRCJudge.m
 ArcDemo_FILES += XRCConfig.m
 ArcDemo_FILES += XRCFloatButton.m
+ArcDemo_FILES += XRCPracticePanel.m
 ArcDemo_FILES += XRCRuntime.m
 ArcDemo_FILES += fishhook.c
 ArcDemo_FILES += $(wildcard WHToast/WHToast/*.m)

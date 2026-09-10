@@ -289,9 +289,20 @@ bool xrc_transition_resume(void *gameplay, bool resume) {
 
 bool xrc_loop_get_enabled(void) { return atomic_load(&s_loop_enabled); }
 void xrc_loop_set_range(uint32_t a_ms, uint32_t b_ms) {
+    // ArcCreate 夹取语义：To >= From + 1000；非法值视为关闭
+    if (b_ms <= a_ms + 1000) {
+        atomic_store(&s_loop_a, 0);
+        atomic_store(&s_loop_b, 0);
+        atomic_store(&s_loop_enabled, false);
+        return;
+    }
     atomic_store(&s_loop_a, a_ms);
     atomic_store(&s_loop_b, b_ms);
-    atomic_store(&s_loop_enabled, a_ms < b_ms);
+    atomic_store(&s_loop_enabled, true);
+}
+void xrc_loop_get_range(uint32_t *from_ms, uint32_t *to_ms) {
+    if (from_ms) *from_ms = atomic_load(&s_loop_a);
+    if (to_ms)   *to_ms   = atomic_load(&s_loop_b);
 }
 void xrc_loop_tick(void *gameplay, uint32_t pos_ms) {
     if (!atomic_load(&s_loop_enabled)) return;
@@ -303,7 +314,11 @@ void xrc_loop_tick(void *gameplay, uint32_t pos_ms) {
 #else
 bool xrc_transition_resume(void *gameplay, bool resume) { return false; }
 bool xrc_loop_get_enabled(void) { return false; }
-void xrc_loop_set_range(uint32_t a_ms, uint32_t b_ms) {}
+void xrc_loop_set_range(uint32_t from_ms, uint32_t to_ms) {}
+void xrc_loop_get_range(uint32_t *from_ms, uint32_t *to_ms) {
+    if (from_ms) *from_ms = 0;
+    if (to_ms)   *to_ms   = 0;
+}
 void xrc_loop_tick(void *gameplay, uint32_t pos_ms) {}
 #endif
 
