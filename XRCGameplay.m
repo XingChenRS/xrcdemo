@@ -82,22 +82,18 @@ static void *s_valid_note_group(void *scene) {
 // 阈值说明：retry/换歌重建后音频必然从曲中/曲尾回到 0ms 附近，单点演奏的
 // 帧间正常波动不可能超过 10 秒 → -10s 是"重建类事件"的可靠判据。
 #define XRC_RETRY_AUDIO_JUMP_MS  (-10000)   // 音频帧间回跳阈值
-static _Atomic(uint32_t) s_capture_ms = 0;      // 目标点（seek/循环 A 写入）；0 = 未武装
-static _Atomic(bool)     s_cap_valid = false;
+static _Atomic(bool)     s_cap_valid = false;   // 音频基准是否已建立
 static int32_t           s_prev_audio_ms = -1;
-static _Atomic(uint32_t) s_retry_armed_gen = 0; // 触发计数（诊断）
+static _Atomic(uint32_t) s_retry_armed_gen = 0; // 回位触发计数（诊断）
 
-void xrc_gameplay_set_resume_ms(uint32_t ms) {
-    atomic_store(&s_capture_ms, ms);
-    atomic_store(&s_cap_valid, false);
-    s_prev_audio_ms = -1;
-    acc_flog(@"retry watch armed: %u ms", ms);
-}
-uint32_t xrc_gameplay_get_resume_ms(void) { return atomic_load(&s_capture_ms); }
+// 兼容 API（v9.0.0 起不再有 capture 目标——回位点只由循环 A 决定）。
+// 保留空实现避免破坏头文件与旧调用；总是返回 0。
+void xrc_gameplay_set_resume_ms(uint32_t ms) { (void)ms; }
+uint32_t xrc_gameplay_get_resume_ms(void) { return 0; }
 
 // 帧内调用（note_group 有效时）：音频位置回跳检测。
 static void s_retry_watch_tick(void) {
-    if (atomic_load(&s_capture_ms) == 0) { s_prev_audio_ms = -1; return; }
+    // v9.0.0：监视常开（回位点由"循环是否开启"在触发时刻决定，无 capture 状态）。
     int32_t pos = (int32_t)xrc_player_position_ms();
     if (pos < 0) return;
     if (!atomic_load(&s_cap_valid)) {
@@ -108,15 +104,18 @@ static void s_retry_watch_tick(void) {
     int32_t jump = pos - s_prev_audio_ms;
     s_prev_audio_ms = pos;
     if (jump < XRC_RETRY_AUDIO_JUMP_MS) {
-        // 手动 retry 回位点：循环开启时 = A 点；否则 = capture 点（Reset on Retry）。
+        // 手动 retry（或异常回跳）回位：**仅循环开启时**回 A 点。
+        // 未开循环 = 不干预（用户要求：不得锁到任何残留位置——v8.9.9 之前的
+        // capture 残留值曾把进度锁到随机位置，已彻底移除该数据流）。
         uint32_t a = 0, b = 0;
         xrc_loop_get_range(&a, &b);
-        uint32_t target = 0;
-        if (xrc_loop_get_enabled() && b > a + 1000) target = a;
-        else target = atomic_load(&s_capture_ms);
-        if (target && xrc_gameplay_request(XRC_OP_SEEK, target)) {
-            atomic_fetch_add(&s_retry_armed_gen, 1);
-            acc_flog(@"retry detected (audio jump %d) -> queued seek %u", jump, target);
+        if (xrc_loop_get_enabled() && b > a + 1000) {
+            if (xrc_gameplay_request(XRC_OP_SEEK, a)) {
+                atomic_fetch_add(&s_retry_armed_gen, 1);
+                acc_flog(@"retry detected (audio jump %d) -> seek loop A %u", jump, a);
+            }
+        } else {
+            acc_flog(@"audio jump %d ignored (loop off)", jump);
         }
     }
 }
@@ -184,12 +183,10 @@ static void s_exec_pending(void *self) {
     }
 
     if (op == XRC_OP_SEEK_REPLAY || op == XRC_OP_LOOP_REWIND) {
-        // 循环回绕/重播：位置已由 seek 平移给出，监视保持武装（用户可能随后 retry）；
-        // 但把音频基准重置，避免回绕本身被识别成 retry。
-        if (atomic_load(&s_capture_ms) != 0) {
-            s_prev_audio_ms = (int32_t)xrc_player_position_ms();
-            atomic_store(&s_cap_valid, true);
-        }
+        // 循环回绕/重播：位置已由 seek 平移给出。重置音频基准，避免回绕本身
+        // 被回跳检测误判为 retry。
+        s_prev_audio_ms = (int32_t)xrc_player_position_ms();
+        atomic_store(&s_cap_valid, true);
         acc_flog(@"replay executed via seek (op=%u)", op);
     }
 }
@@ -371,6 +368,26 @@ void xrc_seek_ms(uint32_t ms) {
 }
 
 #pragma mark - 循环 / 自动重建（玩法语义说明）
+
+/* ───────────────────────── 数据流总览（v9.0.0） ─────────────────────────
+ *
+ * 循环区间 A/B：仅由面板「起点」/「终点」按钮写入；仅由面板「重置循环」
+ *   按钮清除（xrc_loop_reset_all）。**没有任何自动清除路径**——v8.9.6-9
+ *   的"换歌/曲长归零自动清"已全部下线：真机证明 retry 重建同样会重置
+ *   曲长（len=143896->0），自动判据必然误伤（用户报告"retry 清循环"）。
+ *
+ * 循环开关：面板「循环 开/关」（区间完整才允许开启）。
+ *
+ * 到 B 点（循环开）：deferred seek 平移回 A（练习定位语义：已判音符不
+ *   重现、计分不回滚；不触碰游戏状态机，无卡死风险）。
+ *
+ * 手动 Retry（游戏原生重建，安全）：重建后音频回跳（>-10s）被检测 →
+ *   **仅当循环开启**时 seek 回 A；未开循环则不干预（修掉 v8.9.9 以前
+ *   capture 残留值把进度锁到随机位置的 bug）。
+ *
+ * 程序化 retry：三次尝试全部失败且最后一次污染 action 队列致卡死，
+ *   永久放弃（全过程见 DEVLOG v8.9.6/7/8 与 replay 笔记 §11）。
+ * ──────────────────────────────────────────────────────────────────────── */
 
 /*
  * 玩法定义与实现定案（2026-09-10 v8.9.9）：

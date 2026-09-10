@@ -190,25 +190,9 @@
     [self removeFromSuperview];
 }
 
-// 换歌观察（面板开着时每 0.1s）
-// 判据（v8.9.8 收敛，仅保留经真机日志验证的两条）：
-//   a) player 指针变化（Tweak.x 0.5s 轮询的同款判据，这里更密集）；
-//   b) 曲长从 >10s 变为 0 —— 退出换歌必经"歌曲卸载"（v8.9.7 日志 19:02:10
-//      抓到换歌正是这条）。
-// 已删除的判据：位置大回跳 —— 同曲 retry 重建也会让音频归零，v8.9.7 日志
-// 19:02:53 证实它会误清循环区间（用户报告）。retry 场景的状态保留由
-// "不清"即正确。
+// tick：仅刷新 UI（v9.0.0：自动换歌检测/清除全线下——retry 重建会重置曲长，
+// 任何"自动判换歌"都会误伤；循环的清除只走「重置循环段落」按钮）。
 - (void)tick {
-    static void *s_last_p = NULL;
-    static uint32_t s_last_len = 0;
-    void *p = xrc_player_get();
-    uint32_t len = xrc_player_song_length_ms();
-    if (s_last_p != NULL && (p != s_last_p || (s_last_len > 10000 && len == 0))) {
-        xrc_loop_reset_all();
-        acc_flog(@"practice state cleared (panel watch: p=%p len=%u->%u)", p, s_last_len, len);
-    }
-    s_last_p = p;
-    s_last_len = len;
     [self refresh];
 }
 
@@ -235,10 +219,11 @@
     title.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
     title.textColor = [UIColor whiteColor];
     [self addSubview:title];
-    UIButton *close = [self makeButton:@"退出" action:@selector(hide)];
-    close.frame = CGRectMake(x0 + W - 70, y - 3, 70, 26);
-    [close setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
-    [self addSubview:close];
+    // v9.0.0：右上角 = 重置循环段落（清 A/B + 关循环；关闭面板改为单击悬浮球）
+    UIButton *reset = [self makeButton:@"重置循环" action:@selector(resetLoop)];
+    reset.frame = CGRectMake(x0 + W - 84, y - 3, 84, 26);
+    [reset setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
+    [self addSubview:reset];
     y += 20 + blockGap;
 
     // ---- timeline (PracticeTimeline equivalent) ----
@@ -337,7 +322,7 @@
 
     // ---- tips（拖拽=跳转；循环 = 设起点→设终点→开循环；到终点自动重建回起点）----
     UILabel *tips = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
-    tips.text = @"拖时间轴=跳转 ｜ 循环: 设起点→设终点→开循环(到终点回到起点; 要重打音符用游戏内 Retry)";
+    tips.text = @"拖时间轴=跳转 ｜ 循环: 设起点→设终点→开循环(到终点回到起点; Retry 后也回到起点)";
     tips.font = [UIFont systemFontOfSize:10];
     tips.textColor = [UIColor colorWithWhite:0.55 alpha:1.0];
     tips.adjustsFontSizeToFitWidth = YES;
@@ -536,6 +521,14 @@
     [WHToast showMessage:[NSString stringWithFormat:@"循环区间 %02u:%02u - %02u:%02u，可开循环",
                           fs/60, fs%60, ts/60, ts%60]
                 duration:1.4 finishHandler:^{}];
+    [self refresh];
+}
+
+// 重置循环段落（v9.0.0）：清 A/B 与启用标志。唯一的手动清除入口。
+- (void)resetLoop {
+    xrc_loop_reset_all();
+    self.pendingTo = NO;
+    [WHToast showMessage:@"循环段落已重置" duration:1.0 finishHandler:^{}];
     [self refresh];
 }
 
