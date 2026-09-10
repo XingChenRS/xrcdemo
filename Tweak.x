@@ -2,8 +2,11 @@
 // 游戏逻辑全部在 XRC* 模块；交互全部在 XRCPracticePanel（ArcCreate 同构）。
 #define XRC_TWEAK_VERSION  @"v8.6.0"
 #define XRC_BUILD_LABEL    @"Sideload"
-// 构建号：CI 通过 -DXRC_BUILD_STAMP=... 注入（commit sha + 时间）；
-// 本地构建回退为 "dev"。日志首行会打印它——用于确认实际装配的版本。
+// 构建号：CI 生成 xrc_build_stamp.h（commit sha + 时间）；本地构建回退 "dev"。
+// 日志首行打印——用于确认实际装配的版本，杜绝版本混淆。
+#if __has_include("xrc_build_stamp.h")
+#  include "xrc_build_stamp.h"
+#endif
 #ifndef XRC_BUILD_STAMP
 #  define XRC_BUILD_STAMP "dev"
 #endif

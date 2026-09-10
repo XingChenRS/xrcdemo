@@ -53,8 +53,8 @@ jobs:
       - name: Build dylib
         run: |
           make clean
-          # 构建戳：commit sha + 时间（日志首行打印，杜绝版本混淆）
-          export ADDITIONAL_CFLAGS="-DXRC_BUILD_STAMP=\"${GITHUB_SHA:0:7}-$(date -u +%m%d%H%M)\""
+          # 构建戳：写头文件（避免 shell 引号问题），日志首行打印
+          printf '#define XRC_BUILD_STAMP "%s-%s"\n' "${GITHUB_SHA:0:7}" "$(date -u +%m%d%H%M)" > xrc_build_stamp.h
           make
           mkdir -p out
           DYLIB="$(find .theos/obj -maxdepth 2 -name 'ArcDemo.dylib' -not -path '*.dSYM*' | head -n1)"
