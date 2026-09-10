@@ -469,11 +469,18 @@ void xrc_loop_get_range(uint32_t *from_ms, uint32_t *to_ms) {
     if (from_ms) *from_ms = atomic_load(&s_loop_a);
     if (to_ms)   *to_ms   = atomic_load(&s_loop_b);
 }
-// 程序化 retry（步进 1：只做"选中 Retry + 清理复位"）
-// 证据：sub_100947C20(pauseLayer) 即用户点 Retry 时序列的第①步（内部读
-// PauseLayer+688 的 PauseOverlay 树，故必须先构造 PauseLayer）。
-// 历史：直调 triggerAction(13)（旧 s_ar_trigger_retry）被游戏静默忽略
-// （v8.9.6 真机日志连续 TIMEOUT 证实）——action 13 需要暂停层上下文。
+// 程序化 retry（v8.9.8 最终序列）
+// ─────────────────────────────────────────────────────────────
+// 真机日志（v8.9.7）证实的两个前提：
+//   1. Retry 点击回调 sub_100948694 首先校验 `PauseLayer+0x298 == 1`——
+//      该标志由 sub_100947DC0（"暂停已建立"流程）置位，未置位时整段点击
+//      逻辑直接返回（这就是 v8.9.6 直调 triggerAction(13) 被静默忽略的原因）。
+//   2. 触发必须发生在「暂停层存在」的上下文中。
+// 因此序列 = 工厂建 PauseLayer（delegate=当前场景, gm=全局单例, style=0）
+//   → 置 +0x298=1（模拟"暂停已建立"）→ triggerAction(gm, 13, 1, 0, 0)
+//   （= 用户点 Retry 序列第②步；此后游戏走自己的销毁-重建链）。
+// 重建完成后由状态机检测新场景指针 → seek 回 A → 解冻。
+// 失败降级：2s 未见新场景 → 解冻 + 日志（用户手动 retry 仍走音频回跳回位）。
 static void s_ar_trigger_retry(void) {
     extern uint64_t xrc_image_base(void);
     uint64_t base = xrc_image_base();
@@ -484,16 +491,21 @@ static void s_ar_trigger_retry(void) {
     if (!game_model) { acc_flog(@"auto-retry: game model null"); return; }
     void *scene = (void *)atomic_load(&s_ar_scene_before);   // 当前活场景（= delegate）
     if (!scene) { acc_flog(@"auto-retry: no scene"); return; }
-    // PauseLayer(delegate=scene, gameModel, style=0)
+    // ① PauseLayer(delegate=scene, gameModel, style=0) —— 游戏自己的暂停层工厂
     uint64_t (*pause_factory)(void *, uint64_t, int) =
         (uint64_t (*)(void *, uint64_t, int))(base + XRC_OFF_PAUSE_FACTORY);
     uint64_t pl = pause_factory(scene, game_model, 0);
     if (!pl) { acc_flog(@"auto-retry: pause factory returned null"); return; }
-    // 暂停完成例程（= Retry 点击序列第①步；内部经 delegate 转场景清理复位）
-    void (*setup)(uint64_t) = (void (*)(uint64_t))(base + XRC_OFF_PAUSE_SETUP);
-    setup(pl);
-    acc_flog(@"auto-retry: pause-layer retry setup done (pl=%p gm=%p)",
-             (void *)pl, (void *)game_model);
+    // ② 置"暂停已建立"标志（PauseLayer+0x298，sub_100947DC0 同款写入），
+    //    解锁 Retry 回调内部的校验门。
+    *(volatile uint8_t *)(pl + 0x298) = 1;
+    // ③ triggerAction(gm, action=13 /retry/, 1, 0, 0) —— 用户点 Retry 序列第②步
+    void (*trigger)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t) =
+        (void (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t))
+        (base + XRC_OFF_ACTION_TRIGGER);
+    trigger(game_model, XRC_ACTION_RETRY, 1, 0, 0);
+    acc_flog(@"auto-retry: pause-layer armed (pl=%p flag@%p) + triggerAction(13) sent",
+             (void *)pl, (void *)(pl + 0x298));
 }
 
 void xrc_loop_tick(void *gameplay, uint32_t pos_ms) {

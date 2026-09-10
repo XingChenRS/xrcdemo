@@ -190,28 +190,25 @@
     [self removeFromSuperview];
 }
 
-// 换歌观察（面板开着时每 0.1s）：player 指针、曲长、位置三信号联合判定。
-// v8.9.6 真机教训：仅靠 player/channels 指针变化会漏（退出换歌指针复用）。
+// 换歌观察（面板开着时每 0.1s）
+// 判据（v8.9.8 收敛，仅保留经真机日志验证的两条）：
+//   a) player 指针变化（Tweak.x 0.5s 轮询的同款判据，这里更密集）；
+//   b) 曲长从 >10s 变为 0 —— 退出换歌必经"歌曲卸载"（v8.9.7 日志 19:02:10
+//      抓到换歌正是这条）。
+// 已删除的判据：位置大回跳 —— 同曲 retry 重建也会让音频归零，v8.9.7 日志
+// 19:02:53 证实它会误清循环区间（用户报告）。retry 场景的状态保留由
+// "不清"即正确。
 - (void)tick {
     static void *s_last_p = NULL;
     static uint32_t s_last_len = 0;
-    static uint32_t s_last_pos = 0;
     void *p = xrc_player_get();
     uint32_t len = xrc_player_song_length_ms();
-    uint32_t pos = xrc_player_position_ms();
-    if (p != s_last_p || (s_last_len > 10000 && len == 0)) {
-        if (s_last_p != NULL) {
-            xrc_loop_reset_all();
-            acc_flog(@"practice state cleared (panel watch: p=%p len=%u->%u)", p, s_last_len, len);
-        }
-        s_last_p = p;
-    } else if (s_last_pos > 5000 && pos < 1000 && s_last_len > 10000) {
-        // 位置回跳 + 曲长还在（可能同曲重进）→ 也清（保守：只清循环区间）
+    if (s_last_p != NULL && (p != s_last_p || (s_last_len > 10000 && len == 0))) {
         xrc_loop_reset_all();
-        acc_flog(@"practice state cleared (panel watch: pos rewind %u->%u)", s_last_pos, pos);
+        acc_flog(@"practice state cleared (panel watch: p=%p len=%u->%u)", p, s_last_len, len);
     }
+    s_last_p = p;
     s_last_len = len;
-    s_last_pos = pos;
     [self refresh];
 }
 
