@@ -7,6 +7,7 @@
 
 #import "XRCPracticePanel.h"
 #import "XRCFloatButton.h"
+#import "WHToast/WHToast.h"
 #import "AccCommon.h"
 #include "XRCConfig.h"
 #include "XRCGameplay.h"
@@ -145,6 +146,8 @@
 @property (nonatomic, strong) UIButton *toBtn;
 @property (nonatomic, strong) UIButton *onOffBtn;
 @property (nonatomic, strong) UILabel *capsLabel;
+@property (nonatomic, strong) UILabel *judgeHdr;
+@property (nonatomic, strong) NSMutableArray<UITextField *> *judgeFields;
 @property (nonatomic, strong) NSTimer *timer;
 @property (nonatomic, assign) uint32_t pendingFrom;   // 第一次点 From 的暂存（ArcCreate 语义：直接取当前）
 @end
@@ -172,9 +175,12 @@
 - (void)show {
     UIWindow *w = [self keyWindow];
     if (!w) return;
-    CGFloat h = 148;
+    // 高度按内容自适应：时间轴34 + 时间行32 + Repeat行34+速度34 + 改判62 + 退出36 + 状态16 + 边距
+    CGFloat h = 258;
     CGFloat margin = 8;
-    self.frame = CGRectMake(margin, w.bounds.size.height - h - margin - 34, w.bounds.size.width - margin * 2, h);
+    CGFloat bottomInset = 0;
+    if (@available(iOS 11.0, *)) bottomInset = w.safeAreaInsets.bottom;
+    self.frame = CGRectMake(margin, w.bounds.size.height - h - margin - bottomInset, w.bounds.size.width - margin * 2, h);
     self.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
     [self buildIfNeeded];
     [w addSubview:self];
@@ -272,6 +278,39 @@
     [self addSubview:self.speedSlider];
 
     y += 34;
+    // 改判（judge window）：Max/Pure/Far/Lost 四档，缩放 = 总和/270
+    // 桩未激活时禁用（能力门控）
+    UILabel *judgeHdr = [[UILabel alloc] initWithFrame:CGRectMake(10, y, W, 16)];
+    judgeHdr.font = [UIFont systemFontOfSize:11];
+    judgeHdr.textColor = [UIColor colorWithWhite:0.8 alpha:1.0];
+    [self addSubview:judgeHdr];
+    self.judgeHdr = judgeHdr;
+    y += 18;
+    int vals[4];
+    xrc_judge_get_windows(&vals[0], &vals[1], &vals[2], &vals[3]);
+    const char *tags[4] = {"Max","Pure","Far","Lost"};
+    CGFloat colW = (W - 12) / 4.0f;
+    self.judgeFields = [NSMutableArray array];
+    for (int i = 0; i < 4; i++) {
+        UILabel *lbl = [[UILabel alloc] initWithFrame:CGRectMake(10 + colW*i, y, colW-4, 12)];
+        lbl.text = @(tags[i]);
+        lbl.font = [UIFont systemFontOfSize:9];
+        lbl.textAlignment = NSTextAlignmentCenter;
+        lbl.textColor = [UIColor grayColor];
+        [self addSubview:lbl];
+        UITextField *tf = [[UITextField alloc] initWithFrame:CGRectMake(10 + colW*i, y+12, colW-4, 28)];
+        tf.borderStyle = UITextBorderStyleRoundedRect;
+        tf.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightRegular];
+        tf.textAlignment = NSTextAlignmentCenter;
+        tf.keyboardType = UIKeyboardTypeNumberPad;
+        tf.text = [NSString stringWithFormat:@"%d", vals[i]];
+        tf.tag = 4100 + i;
+        tf.delegate = (id<UITextFieldDelegate>)self;
+        [self addSubview:tf];
+        [self.judgeFields addObject:tf];
+    }
+    y += 44;
+
     UIButton *close = [self makeButton:@"Exit Practice" action:@selector(hide)];
     close.frame = CGRectMake(10, y, W, 30);
     [close setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
@@ -287,17 +326,59 @@
 
 // 能力门控：不可用功能禁用（避免崩溃/异常），日志同源可见。
 - (void)applyCapabilityGating {
-    BOOL replayOK = g_caps.replay_available;
+    BOOL replayOK = g_caps.replay_available && XRC_HAS_TRANSITION;
     // 循环按钮：无转场能力则禁用（回放走转场）
     self.onOffBtn.enabled = replayOK;
     self.onOffBtn.alpha = replayOK ? 1.0 : 0.4;
+    // 改判：桩激活才可编辑
+    BOOL judgeOK = g_caps.stub_present && g_caps.judge_handler_live;
+    for (UITextField *tf in self.judgeFields) {
+        tf.enabled = judgeOK;
+        tf.alpha = judgeOK ? 1.0 : 0.5;
+    }
+    self.judgeHdr.text = judgeOK
+        ? @"Judgement window +/-ms (Max/Pure/Far/Lost)"
+        : @"Judgement: stub inactive (binary not patched)";
     self.capsLabel.text = [NSString stringWithFormat:
         @"caps: stub=%d judge=%d gp=%d mtp=%d replay=%d",
         g_caps.stub_present, g_caps.judge_handler_live,
         g_caps.gp_hook_live, g_caps.mtp_hook_live, g_caps.replay_available];
-    self.capsLabel.textColor = (g_caps.stub_present && g_caps.judge_handler_live)
+    self.capsLabel.textColor = judgeOK
         ? [UIColor colorWithWhite:0.7 alpha:1.0]
-        : [UIColor colorWithRed:1.0 green:0.6 blue:0.4 alpha:1.0];   // 改判未生效 → 橙色警示
+        : [UIColor colorWithRed:1.0 green:0.6 blue:0.4 alpha:1.0];
+}
+
+// 改判四档提交（缩放 = 总和 / 270）
+- (void)commitJudge {
+    int v[4];
+    for (int i = 0; i < 4 && i < (int)self.judgeFields.count; i++)
+        v[i] = MAX(1, [self.judgeFields[i].text intValue]);
+    // 夹取：递增关系
+    if (v[1] <= v[0]) v[1] = v[0] + 1;
+    if (v[2] <= v[1]) v[2] = v[1] + 1;
+    if (v[3] <= v[2]) v[3] = v[2] + 1;
+    for (int i = 0; i < 4 && i < (int)self.judgeFields.count; i++)
+        self.judgeFields[i].text = [NSString stringWithFormat:@"%d", v[i]];
+    xrc_judge_set_windows(v[0], v[1], v[2], v[3]);
+    float scale = (v[0] + v[1] + v[2] + v[3]) / 270.0f;
+    xrc_judge_set_scale(scale);
+    xrc_config_t cfg; xrc_config_load(&cfg);
+    cfg.judge_max_ms = v[0]; cfg.judge_pure_ms = v[1];
+    cfg.judge_far_ms = v[2]; cfg.judge_lost_ms = v[3];
+    xrc_config_save(&cfg);
+    if (cfg.toast) {
+        [WHToast showMessage:[NSString stringWithFormat:@"Judge +/-%d/%d/%d/%d (x%.2f)",
+                              v[0], v[1], v[2], v[3], scale]
+                    duration:0.8 finishHandler:^{}];
+    }
+}
+
+- (void)textFieldDidEndEditing:(UITextField *)tf {
+    if (tf.tag >= 4100 && tf.tag <= 4103) [self commitJudge];
+}
+- (BOOL)textFieldShouldReturn:(UITextField *)tf {
+    [tf resignFirstResponder];
+    return YES;
 }
 
 - (UIButton *)makeButton:(NSString *)title action:(SEL)sel {

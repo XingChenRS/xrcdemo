@@ -49,8 +49,14 @@
 #define XRC_NOTE_LOST_OFF           40
 
 // ---------------- 转场重放 ----------------
-// 出处: research/notes/ios-7.0.255-replay-chain.md §6（纯 dylib，零桩点）
-#define XRC_HAS_TRANSITION          1
+// 出处: research/notes/ios-7.0.255-replay-chain.md §6
+// 状态（2026-09-10 真机）：直调转场必崩——sub_100CA9590 内部先构造新场景、
+// 之后才读旧场景 note group（sub_10091BBB8(v3[116])），该指针已被拆为 NULL
+// → far=0x30 空指针。游戏自身从 pause 菜单走 retry 时有完整前置序。
+// 正解 = 驱动游戏自己的 retry（pause 菜单 retryButton 回调），见
+// research/notes/ios-7.0.255-arcdemo-diagnosis-2026-09-10.md。
+// 在 retry 路线落地前，XRC_HAS_TRANSITION 关闭（UI 隐藏 replay/循环）。
+#define XRC_HAS_TRANSITION          0
 #define XRC_TRANSITION_VTABLE_SLOT  178
 #define XRC_TRANSITION_FLAG_OFF     1144  // a2=1 转场标志
 #define XRC_RESUME_POS_OFF          1140  // 新场景恢复位置（ms）
