@@ -9,10 +9,15 @@
 //
 // 安全要点：查不到自己的桩点时**必须 chain 给前一个 SIGTRAP 处理器**，否则会
 // 吞掉 Swift 运行时的 BRK #1 陷阱与 Crashlytics 的崩溃捕获。
+// ucontext.h 在 Darwin 被标为 deprecated，需先定义 _XOPEN_SOURCE 才暴露
+// ucontext_t / mcontext_t；取完立即 undef，避免影响后续 Foundation / Mach 头。
+#define _XOPEN_SOURCE 700
+#include <ucontext.h>
+#undef _XOPEN_SOURCE
+
 #import <Foundation/Foundation.h>
 
 #include <signal.h>
-#include <ucontext.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <mach/mach_time.h>
@@ -90,7 +95,7 @@ static void s_applog_capture(void *vctx) {
 static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
     ucontext_t *uc = (ucontext_t *)vctx;
     if (uc && uc->uc_mcontext) {
-        __darwin_arm_thread_state64_t *ss = &uc->uc_mcontext->__ss;
+        __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
         uint64_t pc = (uint64_t)__darwin_arm_thread_state64_get_pc(*ss);
         int n = atomic_load(&s_count);
         for (int i = 0; i < n; i++) {
