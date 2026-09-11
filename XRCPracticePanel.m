@@ -16,6 +16,7 @@
 #include "XRCJudge.h"
 #include "XRCProbe.h"
 #include "XRCProfile.h"
+#include "XRCDump.h"
 
 // ---------------- 时间轴视图（PracticeTimeline 同构） ----------------
 @interface XRCTimelineView : UIView
@@ -327,10 +328,15 @@
     [self addSubview:tips];
     y += 14 + gap;
 
-    self.capsLabel = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
+    self.capsLabel = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W - 96, 14)];
     self.capsLabel.font = [UIFont systemFontOfSize:10];
     self.capsLabel.textColor = [UIColor colorWithWhite:0.7 alpha:1.0];
     [self addSubview:self.capsLabel];
+    // 内存转储（进程内自读，不经调试器）：诊断用，结果落 Documents/xrcdemo-net/mem/
+    UIButton *dumpBtn = [self makeButton:@"转储内存" action:@selector(dumpMemory)];
+    dumpBtn.frame = CGRectMake(x0 + W - 92, y - 5, 92, 24);
+    dumpBtn.titleLabel.font = [UIFont systemFontOfSize:11];
+    [self addSubview:dumpBtn];
     y += 14 + 2;
 
     self.contentHeight = y;
@@ -519,6 +525,18 @@
                           fs/60, fs%60, ts/60, ts%60]
                 duration:1.4 finishHandler:^{}];
     [self refresh];
+}
+
+// 内存转储（进程内自读，不经调试器）。诊断用：结果落 Documents/xrcdemo-net/mem/
+- (void)dumpMemory {
+    if (xrc_dump_running()) {
+        [WHToast showMessage:[NSString stringWithFormat:@"转储进行中 %d/%d",
+                              xrc_dump_regions_done(), xrc_dump_regions_total()]
+                    duration:1.2 finishHandler:^{}];
+        return;
+    }
+    xrc_dump_start();
+    [WHToast showMessage:@"开始转储内存（后台）" duration:1.5 finishHandler:^{}];
 }
 
 // 重置循环段落（v9.0.0）：清 A/B 与启用标志。唯一的手动清除入口。

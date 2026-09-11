@@ -36,6 +36,7 @@
 #include "XRCJudge.h"
 #include "XRCConfig.h"
 #include "XRCHook.h"
+#include "XRCDump.h"
 
 extern UIApplication *UIApp;
 
@@ -249,6 +250,29 @@ static void doBootstrap(void) {
                     xrc_log(@"[brk]   asc: %@", asc);
                 } else {
                     xrc_log(@"[brk] applog hit but no plaintext captured (buf empty/invalid)");
+                }
+            }
+            // 内存转储的文件触发器：Documents/xrcdemo-net/DUMP 存在 → 转储并删除它。
+            // 这样不用碰 UI 就能触发（Filza/iDownload 里建个空文件即可），
+            // 面板按钮走的是同一个入口。
+            static uint32_t last_dump_done = 0;
+            {
+                NSString *docs = NSSearchPathForDirectoriesInDomains(
+                    NSDocumentDirectory, NSUserDomainMask, YES).firstObject;
+                NSString *netdir = [docs stringByAppendingPathComponent:@"xrcdemo-net"];
+                NSString *flag = [netdir stringByAppendingPathComponent:@"DUMP"];
+                if ([[NSFileManager defaultManager] fileExistsAtPath:flag]) {
+                    [[NSFileManager defaultManager] removeItemAtPath:flag error:nil];
+                    xrc_dump_start();
+                }
+                // 转储进度（每 20% 或结束时打一行）
+                if (xrc_dump_running()) {
+                    int d = xrc_dump_regions_done(), t = xrc_dump_regions_total();
+                    if (t > 0 && (d == t || d / 20 != last_dump_done / 20)) {
+                        xrc_log(@"[dump] %d/%d regions, %.1f MB",
+                                d, t, xrc_dump_bytes_written() / 1048576.0);
+                    }
+                    last_dump_done = d;
                 }
             }
             void *p = xrc_player_get();
