@@ -46,6 +46,47 @@ static inline uint64_t s_now_us(void) {
     return s_tb_den ? (t * s_tb_num) / s_tb_den : t;
 }
 
+// ---------------- applog 明文捕获 ----------------
+// 缓冲放在 dylib 自己的 BSS，不占栈；处理器内只 memcpy + 原子写。
+static uint8_t        s_cap[XRC_BRK_CAP_MAX];
+static _Atomic(size_t)   s_cap_len = 0;
+static _Atomic(uint32_t) s_cap_seq = 0;
+static _Atomic(bool)     s_cap_on  = false;
+static uint32_t          s_cap_taken = 0;
+
+void xrc_brk_capture_enable(bool on) { atomic_store(&s_cap_on, on); }
+uint32_t xrc_brk_capture_seq(void)   { return atomic_load(&s_cap_seq); }
+
+size_t xrc_brk_capture_take(void *buf, size_t cap) {
+    uint32_t seq = atomic_load(&s_cap_seq);
+    if (seq == s_cap_taken) return 0;
+    s_cap_taken = seq;
+    size_t n = atomic_load(&s_cap_len);
+    if (!n) return 0;
+    if (n > cap) n = cap;
+    __builtin_memcpy(buf, s_cap, n);
+    return n;
+}
+
+// applog 桩点的处理器：入口 X0 = OnlineManager，+0x128/+0x130 = 明文 begin/end。
+// 必须在加密之前拿到——入口即满足。
+static void s_applog_capture(void *vctx) {
+    if (!atomic_load(&s_cap_on)) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    uint64_t self = uc->uc_mcontext->__ss.__x[0];
+    // 轻量健全性检查：指针必须在用户空间且对齐，避免处理器内二次缺页
+    if (self < 0x100000000ULL || (self & 7)) return;
+    uint64_t begin = *(volatile uint64_t *)(self + XRC_APPLOG_BUF_BEGIN_OFF);
+    uint64_t end   = *(volatile uint64_t *)(self + XRC_APPLOG_BUF_END_OFF);
+    if (!begin || end <= begin || (begin & 7) || (end & 7)) { return; }
+    uint64_t n = end - begin;
+    if (n > XRC_BRK_CAP_MAX) n = XRC_BRK_CAP_MAX;
+    __builtin_memcpy(s_cap, (const void *)begin, (size_t)n);
+    atomic_store(&s_cap_len, (size_t)n);
+    atomic_fetch_add(&s_cap_seq, 1);
+}
+
 static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
     ucontext_t *uc = (ucontext_t *)vctx;
     if (uc && uc->uc_mcontext) {
@@ -118,7 +159,8 @@ void xrc_brk_setup(uint64_t image_base) {
     // 注入校验：site 处必须是 BRK #0，否则说明二进制没打桩 / 版本不符
     uint32_t insn = *(volatile uint32_t *)site;
     bool patched = (insn == 0xD4200000u);
-    bool ok = xrc_brk_register(site, replay, NULL);
+    bool ok = xrc_brk_register(site, replay, s_applog_capture);
+    xrc_brk_capture_enable(true);
     if (ok) {
         int idx = atomic_load(&s_count) - 1;
         s_slots[idx].name = "applog_send";

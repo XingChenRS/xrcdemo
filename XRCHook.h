@@ -27,3 +27,11 @@ uint32_t    xrc_brk_hits(int slot_index);
 int         xrc_brk_slot_count(void);
 const char *xrc_brk_slot_name(int slot_index);
 uint64_t    xrc_brk_last_hit_us(int slot_index);   // mach_absolute_time 微秒
+
+// ---- applog 明文捕获 ----
+// 处理器在 applog 桩点处按 OnlineManager+0x128/+0x130 抓取**加密前**的明文到内部
+// 缓冲（async-signal-safe：只做 memcpy + 原子写）。主线程用 take() 取走再落盘。
+void     xrc_brk_capture_enable(bool on);
+uint32_t xrc_brk_capture_seq(void);                 // 捕获序号（每次命中 +1）
+// 有新捕获时拷进 buf（最多 cap 字节）返回实际长度；无新数据返回 0。
+size_t   xrc_brk_capture_take(void *buf, size_t cap);

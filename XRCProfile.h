@@ -137,3 +137,12 @@
 #define XRC_BRK_APPLOG_SITE_OFF     (0x623AECULL)   // sub_100623AEC 入口（VA 0x100623AEC）
 #define XRC_BRK_APPLOG_REPLAY_OFF   (0x1468040ULL)  // 重放跳板（__TEXT 空白页，VA 0x101468040）
 #define XRC_BRK_MAX_SLOTS           8
+
+// applog 明文的来源（2026-09-11 定位）：
+//   sub_100623AEC 内 0x100625434 处 `LDR X8,[SP,#var_5F8]`（= 入口 X0，OnlineManager）
+//   紧接 `LDP X19,X21,[X8,#0x128]` —— X19/X21 即 payload 缓冲区的 begin/end，
+//   随后用它们算区间长度并做内联 XXTEA。因此**入口处就能读到整段明文**，
+//   无需在函数体内部另设桩点。
+#define XRC_APPLOG_BUF_BEGIN_OFF    (0x128)   // OnlineManager → uint8* 明文起点
+#define XRC_APPLOG_BUF_END_OFF      (0x130)   // OnlineManager → uint8* 明文终点
+#define XRC_BRK_CAP_MAX             (1u << 20)  // 单次捕获上限 1MB（超出只记长度）

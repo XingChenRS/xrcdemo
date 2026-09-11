@@ -220,6 +220,37 @@ static void doBootstrap(void) {
                     last_brk[i] = h;
                 }
             }
+            // applog 明文捕获落盘（加密前）。缓冲放静态区，避免块捕获大数组。
+            static uint32_t last_cap_seq = 0;
+            static uint8_t  capbuf[XRC_BRK_CAP_MAX];
+            uint32_t cap_seq = xrc_brk_capture_seq();
+            if (cap_seq != last_cap_seq) {
+                last_cap_seq = cap_seq;
+                size_t n = xrc_brk_capture_take(capbuf, sizeof(capbuf));
+                if (n) {
+                    NSString *dir = [NSSearchPathForDirectoriesInDomains(
+                                        NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+                                     stringByAppendingPathComponent:@"xrcdemo-net"];
+                    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                             withIntermediateDirectories:YES attributes:nil error:nil];
+                    NSString *path = [dir stringByAppendingPathComponent:
+                                      [NSString stringWithFormat:@"applog-%u.bin", cap_seq]];
+                    NSData *blob = [NSData dataWithBytes:capbuf length:n];
+                    BOOL wrote = [blob writeToFile:path atomically:YES];
+                    // 前 64 字节 hex + ascii 预览，便于日志里直接看结构
+                    NSMutableString *hex = [NSMutableString string];
+                    NSMutableString *asc = [NSMutableString string];
+                    for (size_t i = 0; i < n && i < 64; i++) {
+                        [hex appendFormat:@"%02x", capbuf[i]];
+                        [asc appendFormat:@"%c", (capbuf[i] >= 32 && capbuf[i] < 127) ? capbuf[i] : '.'];
+                    }
+                    xrc_log(@"[brk] applog plaintext %zu bytes wrote=%d -> %@", n, wrote, path);
+                    xrc_log(@"[brk]   hex: %@", hex);
+                    xrc_log(@"[brk]   asc: %@", asc);
+                } else {
+                    xrc_log(@"[brk] applog hit but no plaintext captured (buf empty/invalid)");
+                }
+            }
             void *p = xrc_player_get();
             if (xrc_player_detect_change(p)) {
                 xrc_log(@"new song: player=%p", p);
