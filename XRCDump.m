@@ -9,7 +9,7 @@
 #import <Foundation/Foundation.h>
 
 #include <mach/mach.h>
-#include <mach/mach_vm.h>
+#include <mach/vm_map.h>
 #include <mach/vm_region.h>
 #include <stdatomic.h>
 #include <string.h>
@@ -91,10 +91,11 @@ static void s_dump_worker(void) {
             break;
         }
 
-        // mach_vm_read_overwrite：未映射页返回错误而不是崩溃
+        // vm_read：未映射页返回错误而不是崩溃（mach_vm_* 在 iOS SDK 里被标为
+        // unsupported，公开的 vm_* 在 arm64 上地址宽度一致，够用）。
         vm_offset_t buf = 0;
         mach_msg_type_number_t got = 0;
-        kr = mach_vm_read(mach_task_self(), base, len, &buf, &got);
+        kr = vm_read(mach_task_self(), base, (vm_size_t)len, &buf, &got);
         if (kr != KERN_SUCCESS || !buf) {
             atomic_fetch_add(&s_done, 1);
             continue;
@@ -104,7 +105,7 @@ static void s_dump_worker(void) {
         NSString *path = [dir stringByAppendingPathComponent:name];
         NSData *d = [NSData dataWithBytesNoCopy:(void *)buf length:got freeWhenDone:NO];
         BOOL ok = [d writeToFile:path atomically:NO];
-        mach_vm_deallocate(mach_task_self(), buf, got);
+        vm_deallocate(mach_task_self(), buf, got);
 
         if (ok) {
             [index appendFormat:@"%012llx %8x %@\n", (unsigned long long)base, got, name];
