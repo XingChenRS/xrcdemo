@@ -9,6 +9,7 @@
 #import <Foundation/Foundation.h>
 
 #include <mach/mach.h>
+#include <mach/mach_vm.h>
 #include <mach/vm_region.h>
 #include <stdatomic.h>
 #include <string.h>
