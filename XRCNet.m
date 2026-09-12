@@ -12,6 +12,14 @@
 
 #include <stdatomic.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <netdb.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/select.h>
 
 #include "XRCNet.h"
 #include "XRCProfile.h"
@@ -20,6 +28,57 @@
 static _Atomic(bool) s_enabled = false;
 static _Atomic(unsigned long long) s_requests = 0;
 static _Atomic(unsigned long long) s_rewritten = 0;
+
+// ---------------- 诊断：进程内裸 socket 直连 ----------------
+// NSURLConnection 报 -1009（瞬间失败）时，用它区分两种根因：
+//   socket 也连不上 → App 沙盒/权限/路由层面就出不去（local network / VPN / 无路由）
+//   socket 能连上   → 问题在 URL 加载层（ATS 决策 / 连接配置）
+static void s_diag_socket(NSString *host, NSInteger port) {
+    if (!host.length || port <= 0) return;
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    char portstr[16];
+    snprintf(portstr, sizeof(portstr), "%ld", (long)port);
+    int gai = getaddrinfo(host.UTF8String, portstr, &hints, &res);
+    if (gai != 0 || !res) {
+        xrc_log(@"[net-diag] getaddrinfo(%@:%ld) failed: %s", host, (long)port, gai_strerror(gai));
+        return;
+    }
+    int fd = socket(res->ai_family, res->ai_socktype, 0);
+    if (fd < 0) {
+        xrc_log(@"[net-diag] socket() failed errno=%d(%s)", errno, strerror(errno));
+        freeaddrinfo(res); return;
+    }
+    int fl = fcntl(fd, F_GETFL, 0);
+    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    int r = connect(fd, res->ai_addr, res->ai_addrlen);
+    int e = errno;
+    if (r == 0) {
+        xrc_log(@"[net-diag] socket connect to %@:%ld OK (immediate)", host, (long)port);
+    } else if (e == EINPROGRESS) {
+        fd_set w; FD_ZERO(&w); FD_SET(fd, &w);
+        struct timeval tv = {5, 0};
+        int sel = select(fd + 1, NULL, &w, NULL, &tv);
+        if (sel > 0) {
+            int soerr = 0; socklen_t sl = sizeof(soerr);
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &soerr, &sl);
+            if (soerr == 0) xrc_log(@"[net-diag] socket connect to %@:%ld OK", host, (long)port);
+            else xrc_log(@"[net-diag] socket connect to %@:%ld FAILED so_error=%d(%s)",
+                         host, (long)port, soerr, strerror(soerr));
+        } else if (sel == 0) {
+            xrc_log(@"[net-diag] socket connect to %@:%ld TIMEOUT", host, (long)port);
+        } else {
+            xrc_log(@"[net-diag] select failed errno=%d(%s)", errno, strerror(errno));
+        }
+    } else {
+        xrc_log(@"[net-diag] socket connect to %@:%ld failed errno=%d(%s)",
+                host, (long)port, e, strerror(e));
+    }
+    close(fd);
+    freeaddrinfo(res);
+}
 
 static NSString *s_base = nil;      // 目标 base，如 http://192.168.1.10:8080
 static NSArray<NSString *> *s_match = nil;   // 需要改写的 host 列表
@@ -43,6 +102,15 @@ bool xrc_net_enabled(void) { return atomic_load(&s_enabled); }
 void xrc_net_set_base(const char *base) {
     s_base = (base && *base) ? @(base) : nil;
     xrc_log(@"[net] base = %@", s_base ?: @"(none)");
+    // 立刻做一次进程内直连自检（后台线程，不阻塞启动）
+    if (s_base) {
+        NSURLComponents *c = [NSURLComponents componentsWithString:s_base];
+        NSString *h = c.host;
+        NSNumber *p = c.port ?: (NSNumber *)@([c.scheme isEqualToString:@"https"] ? 443 : 80);
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+            s_diag_socket(h, p.integerValue);
+        });
+    }
 }
 
 void xrc_net_set_match(const char *hosts) {
@@ -117,11 +185,26 @@ static id s_init_with_request(id self, SEL _cmd, NSURLRequest *req, id delegate,
 // 目的：区分"请求没发出去"（ATS/连接层拦截）与"发出去了但服务端没响应"。
 static IMP s_orig_fail = NULL;
 static IMP s_orig_resp = NULL;
+static _Atomic(bool) s_diag_done_on_fail = false;
 
 static void s_hook_fail(id self_, SEL _cmd, NSURLConnection *c, NSError *err) {
     @try {
         xrc_log(@"[net] ✗ FAILED %@ — %@ (%ld)",
                 c.originalRequest.URL.path, err.localizedDescription, (long)err.code);
+        // 首次失败时补一次进程内直连自检：那一刻的网络栈状态最能说明问题
+        bool expect = false;
+        if (atomic_compare_exchange_strong(&s_diag_done_on_fail, &expect, true) && s_base) {
+            NSURLComponents *u = [NSURLComponents componentsWithString:s_base];
+            NSString *h = u.host;
+            NSInteger p = u.port ? u.port.integerValue
+                                 : ([u.scheme isEqualToString:@"https"] ? 443 : 80);
+            if (h) {
+                // 同时报一下错误对象里的失败 URL 主机，便于对照
+                xrc_log(@"[net-diag] on-fail probe: base=%@:%ld failedURL=%@",
+                        h, (long)p, c.originalRequest.URL.absoluteString);
+                s_diag_socket(h, p);
+            }
+        }
     } @catch (NSException *e) {}
     if (s_orig_fail) ((void (*)(id, SEL, NSURLConnection *, NSError *))s_orig_fail)(self_, _cmd, c, err);
 }
