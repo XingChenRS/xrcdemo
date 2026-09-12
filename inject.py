@@ -239,10 +239,15 @@ def patch_brk_hooks(data: bytearray) -> list[str]:
 def patch_ats() -> list[str]:
     """给 app 的 Info.plist 开 ATS 豁免，否则明文 HTTP 连自有服务端会被拦。
 
-    游戏自身 NSAppTransportSecurity 只设了 NSAllowsArbitraryLoads=False，
-    而 ATS 对 IP 字面量同样生效——私服走 http://<内网IP>:<port> 会被静默阻断
-    （2026-09-12 真机现象：URL 改写成功、请求日志打印，但服务端零到达）。
-    这里补两个键；NSAllowsArbitraryLoads 一并放开，排除该变量。
+    ⚠️ 关键规则（2026-09-12 踩过的坑）：iOS 10+ 上，只要 NSAppTransportSecurity
+    里存在 NSAllowsLocalNetworking / NSAllowsArbitraryLoadsInWebContent /
+    NSAllowsArbitraryLoadsForMedia 中**任意一个**，系统就会**忽略**
+    NSAllowsArbitraryLoads。而 NSAllowsLocalNetworking 只覆盖 .local 与无后缀
+    主机名，**不覆盖数字 IP**——两者同时存在会导致 http://<内网IP> 仍被拦。
+
+    因此这里只写 NSAllowsArbitraryLoads=true，并主动移除其它 Allows* 键。
+    NSLocalNetworkUsageDescription 另加（iOS 14+ 本地网络权限说明；TrollStore
+    安装的 app 因 platform-application entitlement 通常被豁免，不弹窗属正常）。
     """
     import plistlib
     logs = []
@@ -251,19 +256,28 @@ def patch_ats() -> list[str]:
         raise RuntimeError(f"Info.plist not found: {plist_path}")
     with open(plist_path, "rb") as f:
         pl = plistlib.load(f)
-    ats = pl.get("NSAppTransportSecurity", {})
+    ats = dict(pl.get("NSAppTransportSecurity", {}))
     changed = False
-    if not ats.get("NSAllowsLocalNetworking"):
-        ats["NSAllowsLocalNetworking"] = True
-        changed = True
-    if not ats.get("NSAllowsArbitraryLoads"):
+    # 去掉会让 NSAllowsArbitraryLoads 失效的键
+    for k in ("NSAllowsLocalNetworking",
+              "NSAllowsArbitraryLoadsInWebContent",
+              "NSAllowsArbitraryLoadsForMedia"):
+        if k in ats:
+            ats.pop(k)
+            changed = True
+            logs.append(f"ATS: removed {k} (it would disable NSAllowsArbitraryLoads)")
+    if ats.get("NSAllowsArbitraryLoads") is not True:
         ats["NSAllowsArbitraryLoads"] = True
         changed = True
+        logs.append("ATS: NSAllowsArbitraryLoads = true")
     pl["NSAppTransportSecurity"] = ats
+    if not pl.get("NSLocalNetworkUsageDescription"):
+        pl["NSLocalNetworkUsageDescription"] = "Connect to the local Arcaea test server"
+        changed = True
+        logs.append("added NSLocalNetworkUsageDescription")
     if changed:
         with open(plist_path, "wb") as f:
             plistlib.dump(pl, f)
-        logs.append("ATS: NSAllowsLocalNetworking + NSAllowsArbitraryLoads = true")
     else:
         logs.append("ATS: already exempt")
     return logs
