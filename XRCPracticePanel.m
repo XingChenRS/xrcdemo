@@ -17,6 +17,7 @@
 #include "XRCProbe.h"
 #include "XRCProfile.h"
 #include "XRCDump.h"
+#include "XRCNet.h"
 
 // ---------------- 时间轴视图（PracticeTimeline 同构） ----------------
 @interface XRCTimelineView : UIView
@@ -318,6 +319,33 @@
     CGFloat rightBottom = y + 18 + 2 * (rowH + gap) - gap + 13;
     y = MAX(leftBottom, rightBottom) + blockGap;
 
+    // ---- 私服接入（XRCNet）：开关 + 目标 base ----
+    // 只改 API 请求的 scheme/host/port，path/query 原样保留；不碰 TLS。
+    // 换域后域名不在 pin 表里 → TrustKit DomainNotPinned → 放行，无需绕 pin。
+    UIButton *netBtn = [self makeButton:@"私服 关" action:@selector(toggleNet)];
+    netBtn.frame = CGRectMake(x0, y, 112, rowH);
+    netBtn.tag = 4200;
+    netBtn.titleLabel.font = [UIFont systemFontOfSize:11];
+    [netBtn setTitleColor:[UIColor systemTealColor] forState:UIControlStateNormal];
+    [self addSubview:netBtn];
+    UITextField *netField = [[UITextField alloc] initWithFrame:
+                                 CGRectMake(x0 + 118, y, W - 118, rowH)];
+    netField.borderStyle = UITextBorderStyleRoundedRect;
+    netField.font = [UIFont monospacedDigitSystemFontOfSize:11 weight:UIFontWeightRegular];
+    netField.placeholder = @"http://192.168.110.253:8080";
+    netField.autocapitalizationType = UITextAutocapitalizationTypeNone;
+    netField.autocorrectionType = UITextAutocorrectionTypeNo;
+    netField.keyboardType = UIKeyboardTypeURL;
+    netField.returnKeyType = UIReturnKeyDone;
+    netField.tag = 4201;
+    netField.delegate = (id<UITextFieldDelegate>)self;
+    {
+        xrc_config_t c; xrc_config_load(&c);
+        netField.text = c.net_base ?: @"";
+    }
+    [self addSubview:netField];
+    y += rowH + gap;
+
     // ---- tips（拖拽=跳转；循环 = 设起点→设终点→开循环；到终点自动重建回起点）----
     UILabel *tips = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
     tips.text = @"拖时间轴=跳转 ｜ 循环: 设起点→设终点→开循环(到终点回到起点; Retry 后也回到起点)";
@@ -409,7 +437,49 @@
 }
 
 - (void)textFieldDidEndEditing:(UITextField *)tf {
-    if (tf.tag >= 4100 && tf.tag <= 4103) [self commitJudge];
+    if (tf.tag >= 4100 && tf.tag <= 4103) { [self commitJudge]; return; }
+    if (tf.tag == 4201) { [self commitNet]; return; }
+}
+
+// 私服开关：改写开启后，API 请求会打到自有服务端（path/query 原样保留）
+- (void)toggleNet {
+    xrc_config_t c; xrc_config_load(&c);
+    if (!c.net_enabled) {
+        // 开之前必须先有 base，否则改了也没处可去
+        UITextField *f = (UITextField *)[self viewWithTag:4201];
+        NSString *base = [f.text stringByTrimmingCharactersInSet:
+                              [NSCharacterSet whitespaceCharacterSet]];
+        if (!base.length) {
+            [WHToast showMessage:@"请先填服务端地址（如 http://192.168.110.253:8080）"
+                        duration:1.6 finishHandler:^{}];
+            return;
+        }
+        c.net_base = base;
+    }
+    c.net_enabled = !c.net_enabled;
+    xrc_config_save(&c);
+    xrc_net_set_base(c.net_base ? c.net_base.UTF8String : NULL);
+    xrc_net_set_enabled(c.net_enabled);
+    [WHToast showMessage:c.net_enabled
+        ? [NSString stringWithFormat:@"私服 开 → %@", c.net_base]
+        : @"私服 关（走官方域）" duration:1.4 finishHandler:^{}];
+    [self refresh];
+}
+
+// 保存地址（不自动开启；开关单独控制）
+- (void)commitNet {
+    UITextField *f = (UITextField *)[self viewWithTag:4201];
+    NSString *base = [f.text stringByTrimmingCharactersInSet:
+                          [NSCharacterSet whitespaceCharacterSet]];
+    xrc_config_t c; xrc_config_load(&c);
+    c.net_base = base.length ? base : nil;
+    xrc_config_save(&c);
+    xrc_net_set_base(c.net_base ? c.net_base.UTF8String : NULL);
+    if (c.toast) {
+        [WHToast showMessage:[NSString stringWithFormat:@"服务端地址: %@",
+                              base.length ? base : @"(空)"]
+                    duration:1.0 finishHandler:^{}];
+    }
 }
 - (BOOL)textFieldShouldReturn:(UITextField *)tf {
     [tf resignFirstResponder];
@@ -459,6 +529,20 @@
     [self.toBtn setTitle:(rangeOk ? [NSString stringWithFormat:@"终点 %02u:%02u", ts2/60, ts2%60]
                                   : (self.pendingTo ? @"终点(播放中)" : @"终点"))
                 forState:UIControlStateNormal];
+
+    // 私服开关状态 + 请求计数（计数上涨说明确有请求经过改写层）
+    UIButton *nb = (UIButton *)[self viewWithTag:4200];
+    if (nb) {
+        BOOL on = xrc_net_enabled();
+        unsigned long long req = xrc_net_requests(), rw = xrc_net_rewritten();
+        [nb setTitle:[NSString stringWithFormat:@"私服 %@ %llu/%llu",
+                      on ? @"开" : @"关", rw, req]
+            forState:UIControlStateNormal];
+        nb.backgroundColor = on ? [UIColor colorWithRed:0.1 green:0.5 blue:0.5 alpha:1.0]
+                                : [UIColor colorWithWhite:0.25 alpha:1.0];
+        [nb setTitleColor:on ? [UIColor whiteColor] : [UIColor systemTealColor]
+                 forState:UIControlStateNormal];
+    }
     [self applyCapabilityGating];
 }
 

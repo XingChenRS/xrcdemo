@@ -138,6 +138,18 @@
 #define XRC_BRK_APPLOG_REPLAY_OFF   (0x1468040ULL)  // 重放跳板（__TEXT 空白页，VA 0x101468040）
 #define XRC_BRK_MAX_SLOTS           8
 
+// ---------------- 私服接入（XRCNet）----------------
+// 出处: 2026-09-12 真机内存转储分析（incoming/xrcdemo-net/mem，277MB）。
+// 7.0 的 API base 多了一层 codename + 版本号：
+//     https://arcapi-v4.lowiro.com/coordinatedballetclock/42/<endpoint>
+// **codename 不存在于静态二进制**（明文/UTF-16/片段均无），只出现在运行时拼好的
+// URL 里（以 NSURLRequest 的 bplist 形式驻留内存）——来源未定，可能服务端下发。
+// 因此 XRCNet 只改写 scheme/host/port，**保留 path 与 query**，服务端按版本段之后
+// 的 suffix 路由即可，与该前缀解耦。
+// pin：pin 表按域名查询，换到自有域名后返回 DomainNotPinned → 放行；故无需绕 pin。
+#define XRC_NET_DEFAULT_MATCH \
+    "arcapi-v4.lowiro.com,arcapi-v3.lowiro.com,auth-v2.lowiro.com,auth.lowiro.com"
+
 // applog 明文的来源（2026-09-11 定位）：
 //   sub_100623AEC 内 0x100625434 处 `LDR X8,[SP,#var_5F8]`（= 入口 X0，OnlineManager）
 //   紧接 `LDP X19,X21,[X8,#0x128]` —— X19/X21 即 payload 缓冲区的 begin/end，

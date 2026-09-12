@@ -14,6 +14,7 @@
 #include <string.h>
 
 #include "XRCNet.h"
+#include "XRCProfile.h"
 #import "XRCLog.h"
 
 static _Atomic(bool) s_enabled = false;
@@ -26,8 +27,14 @@ static NSArray<NSString *> *s_match = nil;   // 需要改写的 host 列表
 static IMP s_orig_init = NULL;
 
 static NSArray<NSString *> *s_default_match(void) {
-    return @[ @"arcapi-v4.lowiro.com", @"arcapi-v3.lowiro.com",
-              @"auth-v2.lowiro.com",  @"auth.lowiro.com" ];
+    // 默认改写名单集中在 XRCProfile.h（跨版本单一编辑点）
+    NSMutableArray *a = [NSMutableArray array];
+    for (NSString *h in [@(XRC_NET_DEFAULT_MATCH) componentsSeparatedByString:@","]) {
+        NSString *t = [h stringByTrimmingCharactersInSet:
+                          [NSCharacterSet whitespaceCharacterSet]];
+        if (t.length) [a addObject:t];
+    }
+    return a.count ? a : @[ @"arcapi-v4.lowiro.com" ];
 }
 
 void xrc_net_set_enabled(bool on) { atomic_store(&s_enabled, on); }

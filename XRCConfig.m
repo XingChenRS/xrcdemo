@@ -47,9 +47,9 @@ static void s_ensure_defaults(NSMutableDictionary *p) {
     if (!p[@"judgePureMs"]) p[@"judgePureMs"] = @50;
     if (!p[@"judgeFarMs"])  p[@"judgeFarMs"]  = @100;
     if (!p[@"judgeLostMs"]) p[@"judgeLostMs"] = @120;
-    // 私服接入：默认关闭，base 为空（不改写）
+    // 私服接入：默认关闭；地址预填联调用的本机服务端（可改）
     if (!p[@"netEnabled"]) p[@"netEnabled"] = @NO;
-    if (!p[@"netBase"])    p[@"netBase"]    = @"";
+    if (!p[@"netBase"])    p[@"netBase"]    = @"http://192.168.110.253:8080";
     if (!p[@"netMatch"])   p[@"netMatch"]   = @"";
 }
 

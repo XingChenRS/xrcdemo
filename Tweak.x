@@ -198,6 +198,13 @@ static void doBootstrap(void) {
         @try { xrc_probe_run(); }               @catch (NSException *e) { xrc_log(@"probe EX: %@", e); }
         // BRK 桩：验证形态（见 XRCProfile.h）。处理器已在 %ctor 装好，这里只注册桩点。
         @try { xrc_brk_setup(base); }           @catch (NSException *e) { xrc_log(@"brk EX: %@", e); }
+        // 私服重定向：NSURLConnection 层改写 URL（不改 TLS；换域后 pin 自然放行）
+        @try {
+            xrc_net_install();
+            xrc_net_set_base(g_cfg.net_base ? g_cfg.net_base.UTF8String : NULL);
+            xrc_net_set_match(g_cfg.net_match ? g_cfg.net_match.UTF8String : NULL);
+            xrc_net_set_enabled(g_cfg.net_enabled);
+        } @catch (NSException *e) { xrc_log(@"net EX: %@", e); }
         @try {
             static dispatch_once_t tw_once;
             dispatch_once(&tw_once, ^{

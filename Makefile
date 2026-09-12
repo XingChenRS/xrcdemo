@@ -16,6 +16,7 @@ xrcdemo_FILES += XRCRuntime.m
 xrcdemo_FILES += XRCProbe.m
 xrcdemo_FILES += XRCHook.m
 xrcdemo_FILES += XRCDump.m
+xrcdemo_FILES += XRCNet.m
 xrcdemo_FILES += fishhook.c
 xrcdemo_FILES += $(wildcard WHToast/WHToast/*.m)
 
