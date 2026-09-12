@@ -37,6 +37,7 @@
 #include "XRCConfig.h"
 #include "XRCHook.h"
 #include "XRCDump.h"
+#include "XRCNet.h"
 
 extern UIApplication *UIApp;
 

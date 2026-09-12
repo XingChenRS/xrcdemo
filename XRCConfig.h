@@ -13,6 +13,10 @@ typedef struct {
     int       judge_pure_ms;
     int       judge_far_ms;
     int       judge_lost_ms;
+    // ---- 私服接入（XRCNet）----
+    BOOL      net_enabled;  // 是否改写 API 请求指向自有服务端
+    NSString *net_base;     // 目标 base，如 http://192.168.1.10:8080
+    NSString *net_match;    // 需改写的 host（逗号分隔）；空 = 内置默认
 } xrc_config_t;
 
 NSString *xrc_config_path(void);

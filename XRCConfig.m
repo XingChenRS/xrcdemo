@@ -47,6 +47,10 @@ static void s_ensure_defaults(NSMutableDictionary *p) {
     if (!p[@"judgePureMs"]) p[@"judgePureMs"] = @50;
     if (!p[@"judgeFarMs"])  p[@"judgeFarMs"]  = @100;
     if (!p[@"judgeLostMs"]) p[@"judgeLostMs"] = @120;
+    // 私服接入：默认关闭，base 为空（不改写）
+    if (!p[@"netEnabled"]) p[@"netEnabled"] = @NO;
+    if (!p[@"netBase"])    p[@"netBase"]    = @"";
+    if (!p[@"netMatch"])   p[@"netMatch"]   = @"";
 }
 
 NSMutableDictionary *xrc_config_dict(void) {
@@ -102,6 +106,9 @@ void xrc_config_load(xrc_config_t *out) {
     out->judge_far_ms   = [prefs[@"judgeFarMs"] intValue];
     out->judge_lost_ms  = [prefs[@"judgeLostMs"] intValue];
     xrc_config_normalize_judge(out);
+    out->net_enabled    = [prefs[@"netEnabled"] boolValue];
+    out->net_base       = [prefs[@"netBase"] length] ? prefs[@"netBase"] : nil;
+    out->net_match      = [prefs[@"netMatch"] length] ? prefs[@"netMatch"] : nil;
 }
 
 void xrc_config_save(const xrc_config_t *c) {
@@ -114,5 +121,8 @@ void xrc_config_save(const xrc_config_t *c) {
     p[@"judgePureMs"]   = @(c->judge_pure_ms);
     p[@"judgeFarMs"]    = @(c->judge_far_ms);
     p[@"judgeLostMs"]   = @(c->judge_lost_ms);
+    p[@"netEnabled"]    = @(c->net_enabled);
+    p[@"netBase"]       = c->net_base ?: @"";
+    p[@"netMatch"]      = c->net_match ?: @"";
     xrc_config_write_dict(p);
 }
