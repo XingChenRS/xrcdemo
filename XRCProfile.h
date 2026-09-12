@@ -158,3 +158,27 @@
 #define XRC_APPLOG_BUF_BEGIN_OFF    (0x128)   // OnlineManager → uint8* 明文起点
 #define XRC_APPLOG_BUF_END_OFF      (0x130)   // OnlineManager → uint8* 明文终点
 #define XRC_BRK_CAP_MAX             (1u << 20)  // 单次捕获上限 1MB（超出只记长度）
+
+// ---------------- OnlineManager 探针 / applog 强发（XRCOMLog）----------------
+// 出处: 2026-09-12 真机内存转储（incoming/xrcdemo-net-new/mem, 276MB, 972 区域）
+//       + 静态复核（IDA 8745）。
+//   vtable: 0x10149C100 起（[0]=offset-to-top=0、[8]=typeinfo、0x10149C110 起为槽 0）；
+//           对象的 vptr 指向**地址点** 0x10149C110（= _ZTV + 0x10，与 lambda 那套同构）。
+//   typeinfo 名实测 "13OnlineManager"；槽 72 = sub_100623AEC = applog 发送。
+//   单例定位：真机 dump 里 vptr 值全进程**唯一命中**（对象在堆上、每次启动地址变，
+//             所以运行时按值扫描，不写死地址）。
+//   载荷: +0x128/+0x130 = begin/end —— sub_100623AEC 在 0x100625438 处
+//         `LDP X19,X21,[X8,#0x128]` 实证（X8 = 入口 X0）。
+//         注意：**该区间只在调用期间有效**（空闲态 dump 里是非指针垃圾），
+//         所以空闲期转储看不到载荷，只有入口桩能抓。
+//   累加器候选: dump 实测 +0xf0=250 / +0xf8,+0x100,+0x108 = ptr,ptr,30，
+//         (end-begin)/24 = 24 → 疑似 std::vector<std::string>（元素 24B），
+//         capacity 30 ≥ size 24。语义待 XRCOMLog 探针实测确认。
+#define XRC_OM_VTABLE_OFF           (0x149C110ULL)  // vtable 地址点（vptr 值）
+#define XRC_OM_APPLOG_SLOT          (72)            // applog 发送（虚槽）
+#define XRC_OM_OFF_ACC_COUNT        (0xf0)          // 疑似累计计数
+#define XRC_OM_OFF_VEC_BEGIN        (0xf8)          // 疑似 vector<string> begin
+#define XRC_OM_OFF_VEC_END          (0x100)         // 同上 end
+#define XRC_OM_OFF_VEC_CAP          (0x108)         // 同上 capacity
+#define XRC_OM_OFF_USER_ID          (0x140)         // 账号 user_id（dump 实测 2000002）
+#define XRC_OM_OFF_FIFTY            (0x148)         // dump 实测 50（= sub_10000A7F0 的 0x32）

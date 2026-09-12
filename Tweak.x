@@ -38,6 +38,7 @@
 #include "XRCHook.h"
 #include "XRCDump.h"
 #include "XRCNet.h"
+#include "XRCOMLog.h"
 
 extern UIApplication *UIApp;
 
@@ -281,6 +282,21 @@ static void doBootstrap(void) {
                                 d, t, xrc_dump_bytes_written() / 1048576.0);
                     }
                     last_dump_done = d;
+                }
+                // OnlineManager 探针 / applog 强发：同一套标志文件机制。
+                // PROBE  = 打印累加器与载荷字段（后台线程，内存扫描较重）
+                // APPLOG = 直接调 vtable 槽 72 硬造一次上报（留在主线程，网络代码）
+                NSString *pf = [netdir stringByAppendingPathComponent:@"PROBE"];
+                if ([[NSFileManager defaultManager] fileExistsAtPath:pf]) {
+                    [[NSFileManager defaultManager] removeItemAtPath:pf error:nil];
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        @try { xrc_om_probe(); } @catch (NSException *e) { xrc_log(@"[om] probe EX: %@", e); }
+                    });
+                }
+                NSString *af = [netdir stringByAppendingPathComponent:@"APPLOG"];
+                if ([[NSFileManager defaultManager] fileExistsAtPath:af]) {
+                    [[NSFileManager defaultManager] removeItemAtPath:af error:nil];
+                    @try { xrc_om_force_applog(); } @catch (NSException *e) { xrc_log(@"[om] force EX: %@", e); }
                 }
             }
             void *p = xrc_player_get();
