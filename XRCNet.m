@@ -113,6 +113,45 @@ static id s_init_with_request(id self, SEL _cmd, NSURLRequest *req, id delegate,
     return ((id (*)(id, SEL, NSURLRequest *, id, BOOL))s_orig_init)(self, _cmd, req, delegate, start);
 }
 
+// 结果观测：委托类是游戏的 HttpAsynConnection。只记录、原样转发，不改行为。
+// 目的：区分"请求没发出去"（ATS/连接层拦截）与"发出去了但服务端没响应"。
+static IMP s_orig_fail = NULL;
+static IMP s_orig_resp = NULL;
+
+static void s_hook_fail(id self_, SEL _cmd, NSURLConnection *c, NSError *err) {
+    @try {
+        xrc_log(@"[net] ✗ FAILED %@ — %@ (%ld)",
+                c.originalRequest.URL.path, err.localizedDescription, (long)err.code);
+    } @catch (NSException *e) {}
+    if (s_orig_fail) ((void (*)(id, SEL, NSURLConnection *, NSError *))s_orig_fail)(self_, _cmd, c, err);
+}
+
+static void s_hook_resp(id self_, SEL _cmd, NSURLConnection *c, NSURLResponse *r) {
+    @try {
+        NSInteger code = [(NSHTTPURLResponse *)r statusCode];
+        xrc_log(@"[net] ← %ld %@", (long)code, c.originalRequest.URL.path);
+    } @catch (NSException *e) {}
+    if (s_orig_resp) ((void (*)(id, SEL, NSURLConnection *, NSURLResponse *))s_orig_resp)(self_, _cmd, c, r);
+}
+
+static void s_swizzle_result_logging(void) {
+    Class hc = objc_getClass("HttpAsynConnection");
+    if (!hc) { xrc_log(@"[net] HttpAsynConnection absent (result logging off)"); return; }
+    Method mf = class_getInstanceMethod(hc, @selector(connection:didFailWithError:));
+    if (mf) {
+        s_orig_fail = method_getImplementation(mf);
+        method_setImplementation(mf, (IMP)s_hook_fail);
+        xrc_log(@"[net] result logging: didFailWithError hooked");
+    } else {
+        xrc_log(@"[net] didFailWithError absent, skip");
+    }
+    Method mr = class_getInstanceMethod(hc, @selector(connection:didReceiveResponse:));
+    if (mr) {
+        s_orig_resp = method_getImplementation(mr);
+        method_setImplementation(mr, (IMP)s_hook_resp);
+    }
+}
+
 void xrc_net_install(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -125,5 +164,6 @@ void xrc_net_install(void) {
         s_orig_init = method_getImplementation(m);
         method_setImplementation(m, (IMP)s_init_with_request);
         xrc_log(@"[net] installed (match=%@)", [s_match componentsJoinedByString:@","]);
+        s_swizzle_result_logging();
     });
 }

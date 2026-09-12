@@ -236,6 +236,39 @@ def patch_brk_hooks(data: bytearray) -> list[str]:
     return logs
 
 
+def patch_ats() -> list[str]:
+    """给 app 的 Info.plist 开 ATS 豁免，否则明文 HTTP 连自有服务端会被拦。
+
+    游戏自身 NSAppTransportSecurity 只设了 NSAllowsArbitraryLoads=False，
+    而 ATS 对 IP 字面量同样生效——私服走 http://<内网IP>:<port> 会被静默阻断
+    （2026-09-12 真机现象：URL 改写成功、请求日志打印，但服务端零到达）。
+    这里补两个键；NSAllowsArbitraryLoads 一并放开，排除该变量。
+    """
+    import plistlib
+    logs = []
+    plist_path = os.path.join(APP, "Info.plist")
+    if not os.path.isfile(plist_path):
+        raise RuntimeError(f"Info.plist not found: {plist_path}")
+    with open(plist_path, "rb") as f:
+        pl = plistlib.load(f)
+    ats = pl.get("NSAppTransportSecurity", {})
+    changed = False
+    if not ats.get("NSAllowsLocalNetworking"):
+        ats["NSAllowsLocalNetworking"] = True
+        changed = True
+    if not ats.get("NSAllowsArbitraryLoads"):
+        ats["NSAllowsArbitraryLoads"] = True
+        changed = True
+    pl["NSAppTransportSecurity"] = ats
+    if changed:
+        with open(plist_path, "wb") as f:
+            plistlib.dump(pl, f)
+        logs.append("ATS: NSAllowsLocalNetworking + NSAllowsArbitraryLoads = true")
+    else:
+        logs.append("ATS: already exempt")
+    return logs
+
+
 def fat_arm64_slice_offset(raw: bytes) -> int:
     if raw[:4] != b"\xca\xfe\xba\xbe":
         return 0
@@ -437,6 +470,14 @@ def main():
         dst = os.path.join(FW_DIR, os.path.basename(d))
         shutil.copy2(d, dst)
         print(f"[+] copied -> {dst}")
+
+    # ATS 豁免：私服走明文 HTTP，必须放开（否则请求被静默拦截）
+    try:
+        for line in patch_ats():
+            print(f"[+] {line}")
+    except Exception as e:
+        print(f"[!] ATS patch failed: {e}")
+        sys.exit(1)
 
     with open(MAIN, "rb") as f:
         data = bytearray(f.read())
