@@ -447,6 +447,27 @@ def check_binary(path: str) -> int:
 
 
 def main():
+    # 独立入口：只给指定 app bundle 打 ATS 豁免（用于已经注入过二进制、只需补 plist 的场合）
+    #   python inject.py --ats <Arc-mobile.app 路径>
+    if "--ats" in sys.argv:
+        i = sys.argv.index("--ats")
+        if i + 1 >= len(sys.argv):
+            print("usage: inject.py --ats <path/to/Arc-mobile.app>")
+            sys.exit(1)
+        global APP
+        APP = sys.argv[i + 1]
+        if not os.path.isdir(APP):
+            print(f"[!] not a directory: {APP}")
+            sys.exit(1)
+        try:
+            for line in patch_ats():
+                print(f"[+] {line}")
+        except Exception as e:
+            print(f"[!] {e}")
+            sys.exit(1)
+        print("[i] re-sign the app before installing")
+        sys.exit(0)
+
     if "--check" in sys.argv:
         i = sys.argv.index("--check")
         if i + 1 >= len(sys.argv):
