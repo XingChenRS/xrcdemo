@@ -23,16 +23,17 @@
 #include "xrc_plugin_abi.h"
 #include "XRCProfile.h"
 
-#define PLUGIN_VERSION "2"
+#define PLUGIN_VERSION "2.1"
 
 // ---------------------------------------------------------------- 安全内存读
-// mach_vm_read_overwrite：地址未映射时返回 KERN 错误，不会 SIGSEGV。
+// vm_read_overwrite：地址未映射时返回 KERN 错误，不会 SIGSEGV。
+// （用 vm_ 而不是 mach_vm_ 前缀：iOS SDK 只声明了前者，二者在 arm64 上等价。）
 static bool rd(uint64_t addr, void *buf, size_t n) {
     if (!addr) return false;
-    mach_vm_size_t out = 0;
-    kern_return_t kr = mach_vm_read_overwrite(mach_task_self(),
-                          (mach_vm_address_t)addr, (mach_vm_size_t)n,
-                          (mach_vm_address_t)(uintptr_t)buf, &out);
+    vm_size_t out = 0;
+    kern_return_t kr = vm_read_overwrite(mach_task_self(),
+                          (vm_address_t)addr, (vm_size_t)n,
+                          (vm_address_t)(uintptr_t)buf, &out);
     return kr == KERN_SUCCESS && out == n;
 }
 static uint64_t rd64(uint64_t addr) { uint64_t v = 0; rd(addr, &v, 8); return v; }
@@ -186,6 +187,40 @@ static void try_vec_strings(const xrc_host_t *host, const char *tag, uint64_t ve
     }
 }
 
+// 在镜像自身（__TEXT/__DATA_CONST/__DATA 合计 ~26MB）里搜 8 字节等于 obj 的槽位。
+// 单例模式的全局指针就藏在 __DATA/__BSS —— 找到它就能静态 refscan 出 getter，
+// 再顺藤摸瓜找到所有使用点（包括调虚表槽 72 的那处）。
+static void find_obj_refs(const xrc_host_t *host, uint64_t obj) {
+    const uint64_t base = host->image_base;
+    const uint64_t span = 0x1900000;
+    const size_t chunk = 1u << 20;
+    uint8_t *buf = malloc(chunk + 8);
+    if (!buf) return;
+    host->log("[om2] 搜指向 obj 的指针（镜像内 %llx..%llx）：",
+              (unsigned long long)base, (unsigned long long)(base + span));
+    int hits = 0;
+    uint64_t last_va = 0;
+    for (uint64_t off = 0; off < span && hits < 24; off += chunk - 8) {
+        size_t want = (size_t)((span - off < chunk) ? span - off : chunk);
+        if (!rd(base + off, buf, want)) continue;
+        size_t n = want / 8;
+        const uint64_t *p = (const uint64_t *)buf;
+        for (size_t i = 0; i < n; i++) {
+            if (p[i] == obj) {
+                uint64_t va = base + off + i * 8;
+                if (va != last_va) {
+                    host->log("[om2]   +%llx  (va %llx)",
+                              (unsigned long long)(va - base), (unsigned long long)va);
+                    last_va = va;
+                    if (++hits >= 24) break;
+                }
+            }
+        }
+    }
+    if (!hits) host->log("[om2]   （镜像内没有直接指针）");
+    free(buf);
+}
+
 // ---------------------------------------------------------------- 探针 v2
 static void probe_v2(const xrc_host_t *host, const char *pol) {
     uint64_t want = host->image_base + XRC_OM_VTABLE_OFF;
@@ -202,6 +237,9 @@ static void probe_v2(const xrc_host_t *host, const char *pol) {
               (unsigned long long)rd64(obj + XRC_OM_OFF_ACC_COUNT),
               (unsigned long long)rd64(obj + XRC_OM_OFF_USER_ID),
               (unsigned long long)rd64(obj + XRC_OM_OFF_FIFTY));
+
+    // 谁持有 obj —— 单例全局槽（静态反查 getter 的锚点）
+    find_obj_refs(host, obj);
 
     // 默认：对象头原始视图
     dump_hex(host, "om2", obj, 0x180);
