@@ -59,6 +59,45 @@ static char *s_host_policy_json(void) {
 
 static xrc_host_t s_host;
 
+// dlopen 的候选路径，按序尝试。
+//
+// 为什么 bundle 排第一：App 沙盒**不允许对数据容器里的文件做可执行 mmap**
+// （真机实测：`file system sandbox blocked mmap()`，注意这跟 AMFI 签名是两套机制，
+// 越狱绕过的是后者）。而 app bundle 是沙盒放行的 —— 外层 libxrcdemo.dylib 自己
+// 就是从那里 dlopen 进来的，这就是证据。
+//
+// 部署方式因此变成：私服取文件 → 由**外部**（PC 侧经 root SSH 推送 + 设备上
+// ldid -S 签名）落进 bundle。用户不需要做任何事。
+static NSArray<NSString *> *s_candidates(void) {
+    NSMutableArray *a = [NSMutableArray array];
+    NSString *bundle = [NSBundle mainBundle].bundlePath;
+    if (bundle.length) {
+        [a addObject:[bundle stringByAppendingPathComponent:@"xrc_plugin.dylib"]];
+    }
+    [a addObject:[s_plugin_dir() stringByAppendingPathComponent:@"plugin.dylib"]];
+    return a;
+}
+
+static NSString *s_fetch_target(void) {
+    return [s_plugin_dir() stringByAppendingPathComponent:@"plugin.dylib"];
+}
+
+// 把下载到的插件放进候选里的"可执行映射放行"位置。
+// 沙盒内进程写不了自己的 bundle —— 这一步交给外部（见上面的部署说明）。
+static bool s_try_dlopen(NSString *path, void **out_handle) {
+    const char *p = path.UTF8String;
+    if (!p || ![[NSFileManager defaultManager] fileExistsAtPath:path]) return false;
+    xrc_log(@"[hotload] 尝试 dlopen: %@", path);
+    void *h = dlopen(p, RTLD_NOW | RTLD_LOCAL);
+    if (!h) {
+        const char *e = dlerror();
+        xrc_log(@"[hotload]   失败: %s", e ? e : "(no error)");
+        return false;
+    }
+    *out_handle = h;
+    return true;
+}
+
 void xrc_hotload_run_logged(void) {
     xrc_log(@"[hotload] begin: %s", XRC_PLUGIN_URL);
     bool ok = xrc_hotload_run();
@@ -66,32 +105,31 @@ void xrc_hotload_run_logged(void) {
 }
 
 bool xrc_hotload_run(void) {
+    // 1) 先尽力把最新插件拉到本地（失败不致命 —— bundle 里可能已有旧版可用）
     NSData *blob = s_fetch(XRC_PLUGIN_URL, 3.0);
-    if (!blob.length) {
-        xrc_log(@"[hotload] 拉取失败（服务器未跑 / 文件不存在 / 网络）");
-        return false;
+    if (blob.length) {
+        NSString *path = s_fetch_target();
+        NSString *tmp = [path stringByAppendingString:@".new"];
+        if ([blob writeToFile:tmp atomically:YES]) {
+            [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
+            if ([[NSFileManager defaultManager] moveItemAtPath:tmp toPath:path error:nil]) {
+                xrc_log(@"[hotload] 已落盘 %lu 字节 -> %@",
+                        (unsigned long)blob.length, path);
+            }
+        }
+    } else {
+        xrc_log(@"[hotload] 拉取失败（服务器未跑 / 文件不存在），改试本地候选");
     }
-    NSString *path = [s_plugin_dir() stringByAppendingPathComponent:@"plugin.dylib"];
-    // 先写临时文件再原子替换：避免半截文件被 dlopen
-    NSString *tmp = [path stringByAppendingString:@".new"];
-    if (![blob writeToFile:tmp atomically:YES]) {
-        xrc_log(@"[hotload] 写盘失败: %@", tmp);
-        return false;
-    }
-    [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-    if (![[NSFileManager defaultManager] moveItemAtPath:tmp toPath:path error:nil]) {
-        xrc_log(@"[hotload] 替换失败: %@", path);
-        return false;
-    }
-    xrc_log(@"[hotload] 已落盘 %lu 字节 -> %@", (unsigned long)blob.length, path);
 
-    // 越狱设备 AMFI 已绕过，未签名 dylib 可 dlopen；非越狱会被拒（预期内）
-    void *h = dlopen(path.UTF8String, RTLD_NOW | RTLD_LOCAL);
-    if (!h) {
-        const char *e = dlerror();
-        xrc_log(@"[hotload] dlopen 失败: %s", e ? e : "(no error)");
-        return false;
+    // 2) 依次试候选路径
+    void *h = NULL;
+    for (NSString *cand in s_candidates()) {
+        if (s_try_dlopen(cand, &h)) {
+            xrc_log(@"[hotload] dlopen 成功: %@", cand);
+            break;
+        }
     }
+    if (!h) return false;
     xrc_plugin_main_t fn = (xrc_plugin_main_t)dlsym(h, "xrc_plugin_main");
     if (!fn) {
         xrc_log(@"[hotload] 找不到入口 xrc_plugin_main");
