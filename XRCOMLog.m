@@ -339,10 +339,20 @@ static NSDictionary *xrc_policy(void) {
 }
 
 // 把一个 C 串写成 libc++ std::string（<=22 用短串内联，否则 malloc 长串）。
+//
+// 短串长度约定 —— **实测而非套用**：sub_100623AEC 在 0x100625268 处
+//     ldrb w8,[s+23]; sxtb w9,w8; ldr x10,[s+8]; csel x23, x10, x8, lt
+// 即「byte23 带符号 < 0（长串，容量最高位置位）→ 取 [s+8]；否则**直接用 byte23 原值**」。
+// 所以本二进制里短串的 byte23 = 长度本身，不是 (len<<1)|1。
+// 真机实测：按 (len<<1)|1 写，body 只回了 key 而没有 '=' 和 value。
+// str_mode 策略项留作开关，以后不必为这点差异重编译。
+static int s_str_mode = 0;   // 0 = byte23 即长度（本版正确）；1 = (len<<1)|1
+
 static void s_put_string(uint8_t *dst, const char *s, size_t n) {
     if (n <= 22) {
         memcpy(dst, s, n);
-        dst[23] = (uint8_t)((n << 1) | 1);
+        dst[n] = 0;
+        dst[23] = (s_str_mode == 0) ? (uint8_t)n : (uint8_t)((n << 1) | 1);
     } else {
         char *buf = malloc(n + 1);
         if (!buf) return;
@@ -423,6 +433,8 @@ bool xrc_om_force_applog(void) {
     int npair = 0;
     {
         NSDictionary *pol = xrc_policy();
+        if ([pol[@"str_mode"] isKindOfClass:[NSNumber class]])
+            s_str_mode = [pol[@"str_mode"] intValue];
         NSArray *pairs = pol[@"form"];
         if (![pairs isKindOfClass:[NSArray class]] || !pairs.count)
             pairs = @[@[@"log_blob", @"XRCTEST"]];
