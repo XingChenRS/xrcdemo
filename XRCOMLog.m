@@ -302,11 +302,27 @@ bool xrc_om_force_applog(void) {
     uint64_t fn = s_strip(s_rd64(vptr + 8 * XRC_OM_APPLOG_SLOT));
     if (!fn) { xrc_log(@"[om] force: 槽 72 为空"); return false; }
 
-    // X1 = 请求表单容器。0x10062522c 处 `LDR X26,[X1],#8; CMP X26,[X1+8]`
-    // 是"首元素 == 尾指针"的空容器判据 —— 这里照此摆一个空区间。
-    static uint8_t form[0x200];
+    // X1 = 请求表单容器。
+    //
+    // 结构来自 0x10062522C 的循环：`LDR X26,[X8],#8; CMP X26,X8; B.EQ end`
+    //   · 元素是**指针**（8 字节步长，X26 = 元素地址）
+    //   · 元素对象在 +0x20 处有一个 std::string（flag 字节 +0x37、size +0x28）
+    //   · "没有更多"的判据是 [slot] == slot 的地址 + 8
+    // 上一版把 [X1] 直接写成 X1+8（立刻判空），于是循环被跳过、body 恒为 0 字节。
+    // 这一版摆**一个元素**：slot0 指向元素、slot1 = &slot2，让循环处理一条后自然结束。
+    // 元素里的字符串取 "log_blob=XRCTEST"，附带验证"&"+str 的拼接语义。
+    static uint8_t  form[0x200];
+    static uint8_t  elem[0x60];
     memset(form, 0, sizeof(form));
-    *(uint64_t *)form = (uint64_t)(form + 8);
+    memset(elem, 0, sizeof(elem));
+    {
+        const char *kv = "log_blob=XRCTEST";
+        size_t n = strlen(kv);                 // 16
+        memcpy(elem + 0x20, kv, n);            // std::string @ +0x20（短串内联）
+        elem[0x20 + 23] = (uint8_t)((n << 1) | 1);   // 短串标志 + 长度
+        *(uint64_t *)(form + 0) = (uint64_t)elem;
+        *(uint64_t *)(form + 8) = (uint64_t)(form + 16);
+    }
 
     // X2 ≠ NULL。上一版传 NULL，函数对它做 `[X2+0x18]`（崩溃报告 vmRegionInfo
     // 写的就是 "0x18 is not in any region"）。给一块全零的合法可读缓冲即可让
