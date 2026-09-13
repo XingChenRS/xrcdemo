@@ -233,6 +233,43 @@ void xrc_om_probe(void) {
     if (jumped) xrc_log(@"[om] probe: 读 %d 类信号中断（已恢复）", jumped);
 }
 
+// 立刻把两份 BRK 捕获落盘。
+// 为什么不能等定时器：强发会崩（伪造的 cb 被当回调用），进程在调用后 ~60ms 就没了，
+// 而定时器 0.5s 才跑一次 —— 上一次 applog-1.bin 就是这么丢的。
+static void s_flush_captures(void) {
+    NSString *dir = [NSSearchPathForDirectoriesInDomains(
+                        NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+                     stringByAppendingPathComponent:@"xrcdemo-net"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                             withIntermediateDirectories:YES attributes:nil error:nil];
+    static uint8_t buf[XRC_BRK_CAP_MAX];
+
+    uint32_t s1 = xrc_brk_capture_seq();
+    size_t n1 = xrc_brk_capture_take(buf, sizeof(buf));
+    if (n1) {
+        NSString *p = [dir stringByAppendingPathComponent:
+                       [NSString stringWithFormat:@"applog-plain-%u.bin", s1]];
+        [[NSData dataWithBytes:buf length:n1] writeToFile:p atomically:YES];
+        xrc_log(@"[om] flush: 明文 %zu 字节 -> %@", n1, p);
+    } else {
+        xrc_log(@"[om] flush: 明文捕获为空（seq=%u）", s1);
+    }
+
+    uint32_t s2 = xrc_brk_blob_seq();
+    size_t n2 = xrc_brk_blob_take(buf, sizeof(buf));
+    if (n2) {
+        NSString *p = [dir stringByAppendingPathComponent:
+                       [NSString stringWithFormat:@"logblob-%u.bin", s2]];
+        [[NSData dataWithBytes:buf length:n2] writeToFile:p atomically:YES];
+        NSMutableString *hex = [NSMutableString string];
+        for (size_t i = 0; i < n2 && i < 48; i++) [hex appendFormat:@"%02x", buf[i]];
+        xrc_log(@"[om] flush: 密文 %zu 字节 -> %@", n2, p);
+        xrc_log(@"[om] flush:   密文 hex[:48] %@", hex);
+    } else {
+        xrc_log(@"[om] flush: 密文捕获为空（seq=%u）", s2);
+    }
+}
+
 // ---------------------------------------------------------------- 强发槽 72
 // 载荷暂存：把 [obj+0x128, +0x130) 指向我们自己的已知明文，再调槽 72。
 // 目的是一次拿到「已知明文 → 密文」对（明文见日志，密文在 HTTP body 与 BRK
@@ -302,6 +339,9 @@ bool xrc_om_force_applog(void) {
     }
 
     s_guard_leave(&o1, &o2);
+
+    // 先落盘再说话：进程随时可能没（见 s_flush_captures 注释）
+    s_flush_captures();
 
     // 调用前后都看一眼 KPA 缓冲：若函数**原地**加密载荷，这里直接就是密文
     // （HTTP body 为空是因为 X1 表单为空，与载荷无关 —— 上一版实测确认）。
