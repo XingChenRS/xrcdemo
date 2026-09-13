@@ -263,7 +263,7 @@ static void s_flush_captures(void) {
         [[NSData dataWithBytes:buf length:n2] writeToFile:p atomically:YES];
         NSMutableString *hex = [NSMutableString string];
         for (size_t i = 0; i < n2 && i < 48; i++) [hex appendFormat:@"%02x", buf[i]];
-        xrc_log(@"[om] flush: 密文 %zu 字节 -> %@", n2, p);
+        xrc_log(@"[om] flush: 密文 %zu 字节 -> %@ (SP=%llx)", n2, p, (unsigned long long)xrc_brk_blob_sp());
         xrc_log(@"[om] flush:   密文 hex[:48] %@", hex);
     } else {
         xrc_log(@"[om] flush: 密文捕获为空（seq=%u）", s2);

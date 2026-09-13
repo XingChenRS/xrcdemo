@@ -150,7 +150,9 @@
 //   命中时 handler 从 ucontext 取 SP，按 libc++ std::string 布局解出密文并捕获。
 #define XRC_BRK_APPLOG_BLOB_SITE_OFF   (0x6399E4ULL)
 #define XRC_BRK_APPLOG_BLOB_REPLAY_OFF (0x1468050ULL)  // 紧邻上一个跳板，8B，已核对为全零
-#define XRC_APPLOG_BLOB_STR_OFF        (0x240ULL)      // SP + 该值 = log_blob 值 std::string
+#define XRC_APPLOG_BLOB_STR_OFF        (0x240ULL)      // 旧假设：SP+该值 = log_blob 值（实测为 URL，已弃用）
+// 改为整帧捕获：命中时刻那个槽还不是密文，与其继续猜偏移，不如把栈帧整体带走离线搜。
+#define XRC_APPLOG_BLOB_FRAME_LEN      (0x700ULL)      // 从 SP 起抓这么多字节
 
 // ---------------- 私服接入（XRCNet）----------------
 // 出处: 2026-09-12 真机内存转储分析（incoming/xrcdemo-net/mem，277MB）。

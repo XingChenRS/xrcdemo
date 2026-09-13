@@ -98,9 +98,11 @@ static void s_applog_capture(void *vctx) {
 static uint8_t        s_cap2[XRC_BRK_CAP_MAX];
 static _Atomic(size_t)   s_cap2_len = 0;
 static _Atomic(uint32_t) s_cap2_seq = 0;
+static _Atomic(uint64_t) s_cap2_sp  = 0;
 static uint32_t          s_cap2_taken = 0;
 
 uint32_t xrc_brk_blob_seq(void) { return atomic_load(&s_cap2_seq); }
+uint64_t xrc_brk_blob_sp(void)  { return atomic_load(&s_cap2_sp); }
 
 size_t xrc_brk_blob_take(void *buf, size_t cap) {
     uint32_t seq = atomic_load(&s_cap2_seq);
@@ -119,21 +121,17 @@ static void s_applog_blob_capture(void *vctx) {
     if (!uc || !uc->uc_mcontext) return;
     uint64_t sp = (uint64_t)__darwin_arm_thread_state64_get_sp(uc->uc_mcontext->__ss);
     if (sp < 0x100000000ULL || (sp & 7)) return;
-    uint64_t s = sp + XRC_APPLOG_BLOB_STR_OFF;
-    // libc++ std::string：byte23 bit0 = 短串标志
-    uint8_t flag = *(volatile uint8_t *)(s + 23);
-    const uint8_t *data;
-    uint64_t n;
-    if (flag & 1) {                       // 短串：内容内联在对象里
-        data = (const uint8_t *)s;
-        n = (uint64_t)(flag >> 1);
-    } else {                              // 长串：ptr + size
-        data = (const uint8_t *)(*(volatile uint64_t *)s);
-        n = *(volatile uint64_t *)(s + 8);
-    }
-    if (!data || n == 0 || n > XRC_BRK_CAP_MAX) return;
-    __builtin_memcpy(s_cap2, data, (size_t)n);
+    // 直接搬整个栈帧，不猜偏移。
+    // 上一版按静态分析取 SP+0x240，抓回来是 URL 而不是 log_blob 的值 —— 说明
+    // 那个槽在命中时刻还不是密文。与其继续猜，不如把帧整体带走离线搜：
+    //   · URL 已知（上一版实测在 SP+0x240）
+    //   · 字面量 "log_blob" 应当在帧里
+    //   · 密文是高熵段，肉眼/熵值都能挑出来
+    // 帧大小按 0x700 取（该函数 SUB SP,SP,#0x5A0 + 保存区，足够覆盖）。
+    uint64_t n = XRC_APPLOG_BLOB_FRAME_LEN;
+    __builtin_memcpy(s_cap2, (const void *)sp, (size_t)n);
     atomic_store(&s_cap2_len, (size_t)n);
+    atomic_store(&s_cap2_sp, sp);
     atomic_fetch_add(&s_cap2_seq, 1);
 }
 

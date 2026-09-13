@@ -41,3 +41,4 @@ size_t   xrc_brk_capture_take(void *buf, size_t cap);
 // 共用一个缓冲会互相覆盖。主线程分别 take() 落盘。
 uint32_t xrc_brk_blob_seq(void);
 size_t   xrc_brk_blob_take(void *buf, size_t cap);
+uint64_t xrc_brk_blob_sp(void);     // 该次捕获对应的 SP（离线换算帧内绝对地址用）
