@@ -304,22 +304,25 @@ bool xrc_om_force_applog(void) {
 
     // X1 = 请求表单容器。
     //
-    // 结构来自 0x10062522C 的循环：`LDR X26,[X8],#8; CMP X26,X8; B.EQ end`
-    //   · 元素是**指针**（8 字节步长，X26 = 元素地址）
-    //   · 元素对象在 +0x20 处有一个 std::string（flag 字节 +0x37、size +0x28）
-    //   · "没有更多"的判据是 [slot] == slot 的地址 + 8
-    // 上一版把 [X1] 直接写成 X1+8（立刻判空），于是循环被跳过、body 恒为 0 字节。
-    // 这一版摆**一个元素**：slot0 指向元素、slot1 = &slot2，让循环处理一条后自然结束。
-    // 元素里的字符串取 "log_blob=XRCTEST"，附带验证"&"+str 的拼接语义。
+    // 结构来自 0x10062522C 的循环（完整反汇编核对）：
+    //   · 元素是**指针**（8 字节步长），"没有更多"的判据是 [slot] == slot地址 + 8
+    //   · 元素对象里是**一对** std::string：
+    //       key   @ +0x20（flag @ +0x37, size @ +0x28）
+    //       value @ +0x38（flag @ +0x4F, size @ +0x40）
+    //   · 拼接语义：`strh '='` 写在 key 末尾 → "key="，再 append value
+    // 上一版只给了 key、+0x38 全零，所以没走到。这一版两个都给。
     static uint8_t  form[0x200];
-    static uint8_t  elem[0x60];
+    static uint8_t  elem[0x80];
     memset(form, 0, sizeof(form));
     memset(elem, 0, sizeof(elem));
     {
-        const char *kv = "log_blob=XRCTEST";
-        size_t n = strlen(kv);                 // 16
-        memcpy(elem + 0x20, kv, n);            // std::string @ +0x20（短串内联）
-        elem[0x20 + 23] = (uint8_t)((n << 1) | 1);   // 短串标志 + 长度
+        static const char *k = "log_blob";
+        static const char *v = "XRCTEST";
+        size_t kn = strlen(k), vn = strlen(v);
+        memcpy(elem + 0x20, k, kn);
+        elem[0x20 + 23] = (uint8_t)((kn << 1) | 1);   // 短串：flag = (len<<1)|1
+        memcpy(elem + 0x38, v, vn);
+        elem[0x38 + 23] = (uint8_t)((vn << 1) | 1);
         *(uint64_t *)(form + 0) = (uint64_t)elem;
         *(uint64_t *)(form + 8) = (uint64_t)(form + 16);
     }
