@@ -223,9 +223,9 @@ void xrc_om_probe(void) {
         if (pbeg && pend > pbeg && (pend - pbeg) < (1u << 20)) {
             size_t n = (size_t)(pend - pbeg);
             size_t show = n > 64 ? 64 : n;
-            char hex[3 * 64 + 1];
+            char hex[2 * 64 + 1];
             for (size_t i = 0; i < show; i++)
-                snprintf(hex + i * 3, 4, "%02x ", *(const uint8_t *)(pbeg + i));
+                snprintf(hex + i * 2, 3, "%02x", *(const uint8_t *)(pbeg + i));
             xrc_log(@"[om] payload head: %s", hex);
         }
     }
@@ -306,10 +306,10 @@ bool xrc_om_force_applog(void) {
     // 调用前后都看一眼 KPA 缓冲：若函数**原地**加密载荷，这里直接就是密文
     // （HTTP body 为空是因为 X1 表单为空，与载荷无关 —— 上一版实测确认）。
     if (kpa) {
-        char hex[3 * 64 + 1];
+        char hex[2 * 64 + 1];
         size_t show = kpa_len > 64 ? 64 : kpa_len;
         for (size_t i = 0; i < show; i++)
-            snprintf(hex + i * 3, 4, "%02x", kpa[i]);
+            snprintf(hex + i * 2, 3, "%02x", kpa[i]);
         xrc_log(@"[om] force: KPA 缓冲现状(前%zu字节) %s", show, hex);
         for (size_t i = 0; i < kpa_len; i++) if (kpa[i] != (uint8_t)"XRC-KPA:"[i % 8]) {
             xrc_log(@"[om] force: !! 缓冲已被改写（首个不同字节 @%zu）", i);

@@ -138,6 +138,20 @@
 #define XRC_BRK_APPLOG_REPLAY_OFF   (0x1468040ULL)  // 重放跳板（__TEXT 空白页，VA 0x101468040）
 #define XRC_BRK_MAX_SLOTS           8
 
+// 第二个桩点：log_blob 组装处（密文出口）。
+// 出处: 2026-09-12 静态定位 + 2026-09-13 真机验证。
+//   sub_100623AEC 在 0x1006399B0..0x1006399D8 把待发送的 std::string 从
+//   sp+0x290(var_380) 拷到 **sp+0x240(var_410)**，紧随其后 0x1006399DC
+//   `adrl x1, "log_blob"` 就把这个值当成表单字段的值 —— 所以 **sp+0x240 处就是
+//   log_blob 的值（密文）**。（0x290 是它的源，同一份数据；取 0x240 更贴近语义。）
+//   桩点选 0x1006399E4（`add x0, sp, #var_428`）而不是 0x1006399DC：
+//   后者是 ADRL（PC 相对），重放跳板在别处执行会算错目标；前者是 SP 相对，重放安全
+//   （已用 capstone 核对：site 处指令就是 `add x0, sp, #0x1e8`）。
+//   命中时 handler 从 ucontext 取 SP，按 libc++ std::string 布局解出密文并捕获。
+#define XRC_BRK_APPLOG_BLOB_SITE_OFF   (0x6399E4ULL)
+#define XRC_BRK_APPLOG_BLOB_REPLAY_OFF (0x1468050ULL)  // 紧邻上一个跳板，8B，已核对为全零
+#define XRC_APPLOG_BLOB_STR_OFF        (0x240ULL)      // SP + 该值 = log_blob 值 std::string
+
 // ---------------- 私服接入（XRCNet）----------------
 // 出处: 2026-09-12 真机内存转储分析（incoming/xrcdemo-net/mem，277MB）。
 // 7.0 的 API base 多了一层 codename + 版本号：

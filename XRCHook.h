@@ -35,3 +35,9 @@ void     xrc_brk_capture_enable(bool on);
 uint32_t xrc_brk_capture_seq(void);                 // 捕获序号（每次命中 +1）
 // 有新捕获时拷进 buf（最多 cap 字节）返回实际长度；无新数据返回 0。
 size_t   xrc_brk_capture_take(void *buf, size_t cap);
+
+// ---- log_blob 密文捕获（第二个桩点：载荷加密出口，SP+0x290 的 std::string）----
+// 与上面那份**分开缓冲**：入口抓的是明文，出口抓的是密文，两次命中相隔极近，
+// 共用一个缓冲会互相覆盖。主线程分别 take() 落盘。
+uint32_t xrc_brk_blob_seq(void);
+size_t   xrc_brk_blob_take(void *buf, size_t cap);

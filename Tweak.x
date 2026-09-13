@@ -261,6 +261,33 @@ static void doBootstrap(void) {
                     xrc_log(@"[brk] applog hit but no plaintext captured (buf empty/invalid)");
                 }
             }
+            // log_blob 密文捕获落盘（载荷加密出口，第二个桩点）。
+            // 与明文分开缓冲：两次命中相隔极近，共用会被互相覆盖。
+            static uint32_t last_blob_seq = 0;
+            static uint8_t  blobbuf[XRC_BRK_CAP_MAX];
+            uint32_t blob_seq = xrc_brk_blob_seq();
+            if (blob_seq != last_blob_seq) {
+                last_blob_seq = blob_seq;
+                size_t n = xrc_brk_blob_take(blobbuf, sizeof(blobbuf));
+                if (n) {
+                    NSString *dir = [NSSearchPathForDirectoriesInDomains(
+                                        NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+                                     stringByAppendingPathComponent:@"xrcdemo-net"];
+                    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                                             withIntermediateDirectories:YES attributes:nil error:nil];
+                    NSString *path = [dir stringByAppendingPathComponent:
+                                      [NSString stringWithFormat:@"logblob-%u.bin", blob_seq]];
+                    NSData *blob = [NSData dataWithBytes:blobbuf length:n];
+                    BOOL wrote = [blob writeToFile:path atomically:YES];
+                    NSMutableString *hex = [NSMutableString string];
+                    for (size_t i = 0; i < n && i < 64; i++)
+                        [hex appendFormat:@"%02x", blobbuf[i]];
+                    xrc_log(@"[brk] log_blob ciphertext %zu bytes wrote=%d -> %@", n, wrote, path);
+                    xrc_log(@"[brk]   hex: %@", hex);
+                } else {
+                    xrc_log(@"[brk] log_blob hit but nothing captured");
+                }
+            }
             // 内存转储的文件触发器：Documents/xrcdemo-net/DUMP 存在 → 转储并删除它。
             // 这样不用碰 UI 就能触发（Filza/iDownload 里建个空文件即可），
             // 面板按钮走的是同一个入口。

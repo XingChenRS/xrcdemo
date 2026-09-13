@@ -59,6 +59,10 @@ BRK_INSN = struct.pack("<I", 0xD4200000)
 # (名称, site VA, replay VA) —— replay 必须落在 __TEXT 空白页且互不重叠
 BRK_HOOKS = [
     ("applog_send", 0x100623AEC, 0x101468040),   # sub_100623AEC 入口（OnlineManager 槽 72）
+    # log_blob 组装处（密文出口）：待发送的 std::string 在 sp+0x290。
+    # 选 0x1006399E4（add x0,sp,#var_428）而非前一条 ADRL —— ADRL 是 PC 相对指令，
+    # 重放跳板在别处执行会算错目标，这里只收 SP 相对/绝对寻址的指令。
+    ("applog_blob", 0x1006399E4, 0x101468050),
 ]
 # 重放跳板必须避免 PC 相关指令（ADRP/ADR/B/BL/CBZ/TBZ/LDR-literal）——
 # 跳板在别处执行，PC 相对寻址会算错。这里只做"显然安全"的粗筛并提示。

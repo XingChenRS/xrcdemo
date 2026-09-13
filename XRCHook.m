@@ -92,6 +92,51 @@ static void s_applog_capture(void *vctx) {
     atomic_fetch_add(&s_cap_seq, 1);
 }
 
+// ---------------- log_blob 密文捕获 ----------------
+// 第二个桩点（载荷加密出口）。命中时密文是栈上 SP+0x290 处的一个 libc++ std::string
+// （源码位置见 XRCProfile.h 的注释）。独立缓冲，免得和入口那份明文互相覆盖。
+static uint8_t        s_cap2[XRC_BRK_CAP_MAX];
+static _Atomic(size_t)   s_cap2_len = 0;
+static _Atomic(uint32_t) s_cap2_seq = 0;
+static uint32_t          s_cap2_taken = 0;
+
+uint32_t xrc_brk_blob_seq(void) { return atomic_load(&s_cap2_seq); }
+
+size_t xrc_brk_blob_take(void *buf, size_t cap) {
+    uint32_t seq = atomic_load(&s_cap2_seq);
+    if (seq == s_cap2_taken) return 0;
+    s_cap2_taken = seq;
+    size_t n = atomic_load(&s_cap2_len);
+    if (!n) return 0;
+    if (n > cap) n = cap;
+    __builtin_memcpy(buf, s_cap2, n);
+    return n;
+}
+
+static void s_applog_blob_capture(void *vctx) {
+    if (!atomic_load(&s_cap_on)) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    uint64_t sp = (uint64_t)__darwin_arm_thread_state64_get_sp(uc->uc_mcontext->__ss);
+    if (sp < 0x100000000ULL || (sp & 7)) return;
+    uint64_t s = sp + XRC_APPLOG_BLOB_STR_OFF;
+    // libc++ std::string：byte23 bit0 = 短串标志
+    uint8_t flag = *(volatile uint8_t *)(s + 23);
+    const uint8_t *data;
+    uint64_t n;
+    if (flag & 1) {                       // 短串：内容内联在对象里
+        data = (const uint8_t *)s;
+        n = (uint64_t)(flag >> 1);
+    } else {                              // 长串：ptr + size
+        data = (const uint8_t *)(*(volatile uint64_t *)s);
+        n = *(volatile uint64_t *)(s + 8);
+    }
+    if (!data || n == 0 || n > XRC_BRK_CAP_MAX) return;
+    __builtin_memcpy(s_cap2, data, (size_t)n);
+    atomic_store(&s_cap2_len, (size_t)n);
+    atomic_fetch_add(&s_cap2_seq, 1);
+}
+
 static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
     ucontext_t *uc = (ucontext_t *)vctx;
     if (uc && uc->uc_mcontext) {
@@ -172,6 +217,19 @@ void xrc_brk_setup(uint64_t image_base) {
     }
     xrc_log(@"[brk] applog slot reg=%d site=%p(insn=%08X patched=%d) replay=%p",
             ok, (void *)site, insn, patched, (void *)replay);
+
+    // 第二个桩点：载荷加密出口（密文在 SP+0x290 的 std::string 里）
+    uint64_t site2   = image_base + XRC_BRK_APPLOG_BLOB_SITE_OFF;
+    uint64_t replay2 = image_base + XRC_BRK_APPLOG_BLOB_REPLAY_OFF;
+    uint32_t insn2 = *(volatile uint32_t *)site2;
+    bool patched2 = (insn2 == 0xD4200000u);
+    bool ok2 = xrc_brk_register(site2, replay2, s_applog_blob_capture);
+    if (ok2) {
+        int idx = atomic_load(&s_count) - 1;
+        s_slots[idx].name = "applog_blob";
+    }
+    xrc_log(@"[brk] applog_blob slot reg=%d site=%p(insn=%08X patched=%d) replay=%p",
+            ok2, (void *)site2, insn2, patched2, (void *)replay2);
 }
 
 uint32_t xrc_brk_hits(int slot_index) {
