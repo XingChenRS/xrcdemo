@@ -574,3 +574,26 @@ bool xrc_om_force_applog(void) {
             seq_after != seq_before ? "明文已捕获" : "桩未命中或载荷区间被判无效");
     return true;
 }
+
+
+// ---------------------------------------------------------------- 对外原语
+// 供 XRCHotLoad 组装能力表用（见 xrc_plugin_abi.h）。
+uint64_t xrc_om_mem_rd64(uint64_t addr) { return s_rd64(addr); }
+
+bool xrc_om_mem_wr64(uint64_t addr, uint64_t v) {
+    if (addr < 0x100000000ULL || (addr & 7)) return false;
+    *(volatile uint64_t *)addr = v;
+    return true;
+}
+
+char *xrc_policy_json_copy(void) {
+    NSDictionary *p = xrc_policy();
+    if (!p) return NULL;
+    NSData *d = [NSJSONSerialization dataWithJSONObject:p options:0 error:nil];
+    if (!d.length) return NULL;
+    char *out = malloc(d.length + 1);
+    if (!out) return NULL;
+    memcpy(out, d.bytes, d.length);
+    out[d.length] = 0;
+    return out;
+}

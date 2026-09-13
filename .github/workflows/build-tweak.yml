@@ -77,6 +77,22 @@ jobs:
           file "out/${DYLIB_OUT}"
           lipo -info "out/${DYLIB_OUT}"
 
+      # 热加载内层插件：独立子工程，产出 xrc_plugin.dylib
+      # 它不进 app 包，由私服 /__xrc/plugin.dylib 托管、外层 dylib 联网拉取。
+      - name: Build hotload plugin
+        run: |
+          cd plugin
+          make clean || true
+          make
+          cd ..
+          PLUGIN="$(find plugin/.theos/obj -maxdepth 2 -name 'xrcplugin.dylib' -not -path '*.dSYM*' | head -n1)"
+          if [ -z "$PLUGIN" ]; then echo "xrcplugin.dylib not found"; exit 1; fi
+          cp "$PLUGIN" out/xrc_plugin.dylib
+          install_name_tool -id @rpath/xrc_plugin.dylib out/xrc_plugin.dylib
+          ldid -S out/xrc_plugin.dylib
+          lipo -info out/xrc_plugin.dylib
+          nm -gU out/xrc_plugin.dylib | grep xrc_plugin_main
+
       # ---- cache: prebuilt ellekit ----
       - name: Cache ellekit
         id: cache-ek
@@ -116,4 +132,5 @@ jobs:
           path: |
             out/libxrcdemo.dylib
             out/libellekit.dylib
+            out/xrc_plugin.dylib
           if-no-files-found: error

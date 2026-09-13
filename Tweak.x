@@ -39,6 +39,7 @@
 #include "XRCDump.h"
 #include "XRCNet.h"
 #include "XRCOMLog.h"
+#include "XRCHotLoad.h"
 
 extern UIApplication *UIApp;
 
@@ -324,6 +325,16 @@ static void doBootstrap(void) {
                 if ([[NSFileManager defaultManager] fileExistsAtPath:af]) {
                     [[NSFileManager defaultManager] removeItemAtPath:af error:nil];
                     @try { xrc_om_force_applog(); } @catch (NSException *e) { xrc_log(@"[om] force EX: %@", e); }
+                }
+                // 热加载内层插件：HOTLOAD 标志 → 从私服拉 plugin.dylib 并 dlopen。
+                // 这是"改逻辑不重注入"的关键：外层注入一次，之后只换私服上的插件。
+                NSString *hf = [netdir stringByAppendingPathComponent:@"HOTLOAD"];
+                if ([[NSFileManager defaultManager] fileExistsAtPath:hf]) {
+                    [[NSFileManager defaultManager] removeItemAtPath:hf error:nil];
+                    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+                        @try { xrc_hotload_run_logged(); }
+                        @catch (NSException *e) { xrc_log(@"[hotload] EX: %@", e); }
+                    });
                 }
             }
             void *p = xrc_player_get();

@@ -27,3 +27,8 @@ void xrc_om_probe(void);
 // 强制调用 vtable 槽 72（applog 发送）。返回是否"调用返回了"（不含崩溃兜底）。
 // 失败会在日志里说明；进程不受影响。
 bool xrc_om_force_applog(void);
+
+// 以下三个供热加载插件（xrc_plugin_abi.h 的能力表）使用。
+uint64_t xrc_om_mem_rd64(uint64_t addr);              // 不可读返回 0
+bool     xrc_om_mem_wr64(uint64_t addr, uint64_t v);  // 失败返回 false
+char    *xrc_policy_json_copy(void);                  // malloc 串；无策略返回 NULL
