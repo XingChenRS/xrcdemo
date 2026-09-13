@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "XRCOMLog.h"
@@ -233,6 +234,26 @@ void xrc_om_probe(void) {
 }
 
 // ---------------------------------------------------------------- 强发槽 72
+// 载荷暂存：把 [obj+0x128, +0x130) 指向我们自己的已知明文，再调槽 72。
+// 目的是一次拿到「已知明文 → 密文」对（明文见日志，密文在 HTTP body 与 BRK
+// 捕获里），用于反解种子 codec —— 这条正是 log_blob / chart= 用的那套。
+// 用 malloc 而不是静态数组：万一函数按所有权释放这段缓冲，静态区会被 free 崩。
+#define XRC_KPA_LEN 256
+static uint8_t *s_kpa = NULL;
+
+static const uint8_t *s_kpa_buf(size_t *out_len) {
+    if (!s_kpa) {
+        s_kpa = malloc(XRC_KPA_LEN);
+        if (!s_kpa) return NULL;
+        // 可辨识、可复现的已知明文（纯 ASCII，便于在日志/hex 里肉眼对照）
+        static const char *tag = "XRC-KPA:";
+        for (size_t i = 0; i < XRC_KPA_LEN; i++)
+            s_kpa[i] = (uint8_t)tag[i % 8];
+    }
+    *out_len = XRC_KPA_LEN;
+    return s_kpa;
+}
+
 bool xrc_om_force_applog(void) {
     uint64_t obj = xrc_om_find();
     if (!obj) {
@@ -256,6 +277,18 @@ bool xrc_om_force_applog(void) {
     static uint8_t cb[0x100];
     memset(cb, 0, sizeof(cb));
 
+    // 暂存已知明文到载荷区间（先存旧值，函数若正常返回就还回去）
+    size_t kpa_len = 0;
+    const uint8_t *kpa = s_kpa_buf(&kpa_len);
+    uint64_t old_beg = s_rd64(obj + XRC_APPLOG_BUF_BEGIN_OFF);
+    uint64_t old_end = s_rd64(obj + XRC_APPLOG_BUF_END_OFF);
+    if (kpa) {
+        *(uint64_t *)(obj + XRC_APPLOG_BUF_BEGIN_OFF) = (uint64_t)kpa;
+        *(uint64_t *)(obj + XRC_APPLOG_BUF_END_OFF)   = (uint64_t)(kpa + kpa_len);
+        xrc_log(@"[om] force: 暂存已知明文 %zu 字节 @%p（原 %llx..%llx）",
+                kpa_len, kpa, (unsigned long long)old_beg, (unsigned long long)old_end);
+    }
+
     uint32_t seq_before = xrc_brk_capture_seq();
     xrc_log(@"[om] force: obj=%llx fn(slot72)=%llx form=%p cb=%p 即将调用",
             (unsigned long long)obj, (unsigned long long)fn, form, cb);
@@ -270,6 +303,12 @@ bool xrc_om_force_applog(void) {
 
     s_guard_leave(&o1, &o2);
 
+    // 只在指针仍是我们写进去的那对时才还原（函数可能已改写或释放）
+    if (kpa && s_rd64(obj + XRC_APPLOG_BUF_BEGIN_OFF) == (uint64_t)kpa) {
+        *(uint64_t *)(obj + XRC_APPLOG_BUF_BEGIN_OFF) = old_beg;
+        *(uint64_t *)(obj + XRC_APPLOG_BUF_END_OFF)   = old_end;
+    }
+
     uint32_t seq_after = xrc_brk_capture_seq();
     if (jumped) {
         xrc_log(@"[om] force: 调用被信号 %d 中断（兜底 %d 次，已恢复，进程无恙）",
@@ -278,6 +317,6 @@ bool xrc_om_force_applog(void) {
     }
     xrc_log(@"[om] force: 调用返回；BRK 捕获 seq %u -> %u（%s）",
             seq_before, seq_after,
-            seq_after != seq_before ? "明文已捕获" : "桩未命中");
+            seq_after != seq_before ? "明文已捕获" : "桩未命中或载荷区间被判无效");
     return true;
 }
