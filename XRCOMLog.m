@@ -270,11 +270,116 @@ static void s_flush_captures(void) {
     }
 }
 
+#include <time.h>
+static uint64_t s_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+
+// ---------------------------------------------------------------- 策略热加载
+// 目的：X1 容器形状 / KPA 内容 / 捕获开关这类**每次实验都要调**的东西，
+// 不该每改一次就重编译重注入。改成运行时从我们自己的服务器拉一份 JSON。
+//
+// 取策略的顺序：
+//   1. http://127.0.0.1:8080/__xrc/policy   —— 设备上的回环 relay 直通 PC 私服
+//      （iOS 本地网络权限挡的是"局域网"，回环不受限；这条路径其它 API 已在用）
+//   2. Documents/xrcdemo-net/policy.json    —— SSH 兜底，服务器不在时也能改
+// 失败就沿用上一次成功的策略（缓存），再失败就用内置默认。
+static NSDictionary *s_policy_cache = nil;
+static uint64_t      s_policy_at_us = 0;
+#define XRC_POLICY_TTL_US (2ULL * 1000 * 1000)   // 2 秒内不重复拉
+
+static NSDictionary *s_policy_from_net(void) {
+    NSURL *u = [NSURL URLWithString:@"http://127.0.0.1:8080/__xrc/policy"];
+    if (!u) return nil;
+    NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:u];
+    r.timeoutInterval = 2.0;
+    r.cachePolicy = NSURLRequestReloadIgnoringLocalCacheData;
+    __block NSData *body = nil;
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    NSURLSessionDataTask *t = [[NSURLSession sharedSession] dataTaskWithRequest:r
+        completionHandler:^(NSData *d, NSURLResponse *resp, NSError *e) {
+            if (d.length) body = d;
+            dispatch_semaphore_signal(sem);
+        }];
+    [t resume];
+    dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)));
+    if (!body.length) return nil;
+    id j = [NSJSONSerialization JSONObjectWithData:body options:0 error:nil];
+    return [j isKindOfClass:[NSDictionary class]] ? j : nil;
+}
+
+static NSDictionary *s_policy_from_file(void) {
+    NSString *p = [NSSearchPathForDirectoriesInDomains(
+                      NSDocumentDirectory, NSUserDomainMask, YES).firstObject
+                   stringByAppendingPathComponent:@"xrcdemo-net/policy.json"];
+    NSData *d = [NSData dataWithContentsOfFile:p];
+    if (!d.length) return nil;
+    id j = [NSJSONSerialization JSONObjectWithData:d options:0 error:nil];
+    return [j isKindOfClass:[NSDictionary class]] ? j : nil;
+}
+
+static NSDictionary *xrc_policy(void) {
+    uint64_t now = s_now_us();
+    if (s_policy_cache && (now - s_policy_at_us) < XRC_POLICY_TTL_US) return s_policy_cache;
+    NSDictionary *j = s_policy_from_net();
+    NSString *src = @"net";
+    if (!j) { j = s_policy_from_file(); src = @"file"; }
+    if (j) {
+        s_policy_cache = j;
+        s_policy_at_us = now;
+        xrc_log(@"[om] policy <- %@: %@", src, j);
+    } else if (s_policy_cache) {
+        xrc_log(@"[om] policy 拉取失败，沿用缓存");
+    } else {
+        xrc_log(@"[om] policy 无来源，用内置默认");
+    }
+    return s_policy_cache;
+}
+
+// 把一个 C 串写成 libc++ std::string（<=22 用短串内联，否则 malloc 长串）。
+static void s_put_string(uint8_t *dst, const char *s, size_t n) {
+    if (n <= 22) {
+        memcpy(dst, s, n);
+        dst[23] = (uint8_t)((n << 1) | 1);
+    } else {
+        char *buf = malloc(n + 1);
+        if (!buf) return;
+        memcpy(buf, s, n);
+        buf[n] = 0;
+        *(uint64_t *)dst = (uint64_t)buf;
+        *(uint64_t *)(dst + 8) = n;
+        *(uint64_t *)(dst + 16) = n | (1ULL << 63);
+    }
+}
+
+// 从策略里取一个字符串（缺省返回 nil）。
+static NSString *s_pol_str(NSDictionary *p, NSString *k) {
+    id v = p[k];
+    return [v isKindOfClass:[NSString class]] ? v : nil;
+}
+
+// hex 字符串 → 字节（返回 malloc 的缓冲，长度写进 out）。
+static uint8_t *s_hex_dup(NSString *hex, size_t *out_len) {
+    const char *c = hex.UTF8String;
+    size_t n = strlen(c);
+    if (n < 2 || (n & 1)) return NULL;
+    size_t m = n / 2;
+    uint8_t *b = malloc(m);
+    if (!b) return NULL;
+    for (size_t i = 0; i < m; i++) {
+        char hi = c[i * 2], lo = c[i * 2 + 1];
+        int h = (hi >= '0' && hi <= '9') ? hi - '0' : (hi | 32) - 'a' + 10;
+        int l = (lo >= '0' && lo <= '9') ? lo - '0' : (lo | 32) - 'a' + 10;
+        if (h < 0 || h > 15 || l < 0 || l > 15) { free(b); return NULL; }
+        b[i] = (uint8_t)((h << 4) | l);
+    }
+    *out_len = m;
+    return b;
+}
+
 // ---------------------------------------------------------------- 强发槽 72
-// 载荷暂存：把 [obj+0x128, +0x130) 指向我们自己的已知明文，再调槽 72。
-// 目的是一次拿到「已知明文 → 密文」对（明文见日志，密文在 HTTP body 与 BRK
-// 捕获里），用于反解种子 codec —— 这条正是 log_blob / chart= 用的那套。
-// 用 malloc 而不是静态数组：万一函数按所有权释放这段缓冲，静态区会被 free 崩。
 #define XRC_KPA_LEN 256
 static uint8_t *s_kpa = NULL;
 
@@ -303,36 +408,53 @@ bool xrc_om_force_applog(void) {
     if (!fn) { xrc_log(@"[om] force: 槽 72 为空"); return false; }
 
     // X1 = 请求表单容器 = **std::map<std::string, std::string>**（libc++）。
+    // 依据（0x10062522C..0x100625380 整段反汇编）：空判据 [X1]==X1+8 即
+    // __begin_node_ == &__end_node_；循环尾是红黑树 next（[node+8] 下探、
+    // [node+0x10] 上行）；节点值在 +0x20/+0x38（__tree_node = 0x20 头 + pair）。
     //
-    // 依据（0x10062522C..0x100625380 整段反汇编）：
-    //   · 空判据 `[X1] == X1+8` —— 正是 libc++ map 的 `__begin_node_ == &__end_node_`
-    //   · 首轮把 `x19 = X1+8`（&__end_node_）存为迭代终止哨兵
-    //   · 循环尾部 0x100625348 是红黑树迭代器的 next：
-    //       [node+8] 下探、[node+0x10] = __parent_、`[parent]==node` 判断上行
-    //   · 节点值在 +0x20/+0x38 —— libc++ `__tree_node` = 0x20 节点头 +
-    //       `pair<const string,string>`（key@+0x20, value@+0x38）
-    //
-    // 单节点树的摆法（要让上面那个 next 正好绕回哨兵）：
-    //   node+0x00/0x08 = 0（无子）、node+0x10 = &__end_node_、node+0x18 = 1（黑）
-    //   map+0x00 = node（__begin_node_）、map+0x08 = node（__end_node_.__left_ = 根）
-    //   map+0x10 = 1（size）
+    // **形状由策略决定**（服务器 /__xrc/policy 或 Documents/xrcdemo-net/policy.json），
+    // 改策略不用重编译。多对时摆成右倾链：node[i].right=node[i+1]、
+    // node[i].parent=node[i-1]（首个的 parent = &__end_node_），中序即 0,1,2…，
+    // 迭代器从最后一个节点沿 parent 上行正好绕回哨兵结束。
     static uint8_t form[0x40];
-    static uint8_t node[0x50];
+    static uint8_t nodes[8][0x50];
     memset(form, 0, sizeof(form));
-    memset(node, 0, sizeof(node));
+    memset(nodes, 0, sizeof(nodes));
+    int npair = 0;
     {
-        static const char *k = "log_blob";
-        static const char *v = "XRCTEST";
-        size_t kn = strlen(k), vn = strlen(v);
-        memcpy(node + 0x20, k, kn);
-        node[0x20 + 23] = (uint8_t)((kn << 1) | 1);   // 短串：flag = (len<<1)|1
-        memcpy(node + 0x38, v, vn);
-        node[0x38 + 23] = (uint8_t)((vn << 1) | 1);
-        *(uint64_t *)(node + 0x10) = (uint64_t)(form + 8);  // __parent_ = &__end_node_
-        *(uint64_t *)(node + 0x18) = 1;                     // __is_black_
-        *(uint64_t *)(form + 0x00) = (uint64_t)node;        // __begin_node_
-        *(uint64_t *)(form + 0x08) = (uint64_t)node;        // 根
-        *(uint64_t *)(form + 0x10) = 1;                     // size
+        NSDictionary *pol = xrc_policy();
+        NSArray *pairs = pol[@"form"];
+        if (![pairs isKindOfClass:[NSArray class]] || !pairs.count)
+            pairs = @[@[@"log_blob", @"XRCTEST"]];
+        for (id pr in pairs) {
+            if (npair >= 8) break;
+            if (![pr isKindOfClass:[NSArray class]] || [pr count] < 2) continue;
+            NSString *k = pr[0], *v = pr[1];
+            if (![k isKindOfClass:[NSString class]] ||
+                ![v isKindOfClass:[NSString class]]) continue;
+            uint8_t *nd = nodes[npair];
+            s_put_string(nd + 0x20, k.UTF8String, strlen(k.UTF8String));   // key
+            s_put_string(nd + 0x38, v.UTF8String, strlen(v.UTF8String));   // value
+            *(uint64_t *)(nd + 0x18) = 1;                                  // __is_black_
+            npair++;
+        }
+        if (!npair) {   // 策略全不合法 → 至少给一对，别让 map 空着
+            s_put_string(nodes[0] + 0x20, "log_blob", 8);
+            s_put_string(nodes[0] + 0x38, "XRCTEST", 7);
+            *(uint64_t *)(nodes[0] + 0x18) = 1;
+            npair = 1;
+        }
+        for (int i = 0; i < npair; i++) {
+            uint8_t *nd = nodes[i];
+            *(uint64_t *)(nd + 0x08) = (i + 1 < npair) ? (uint64_t)nodes[i + 1] : 0;  // right
+            *(uint64_t *)(nd + 0x10) = (i == 0) ? (uint64_t)(form + 8)
+                                                : (uint64_t)nodes[i - 1];          // parent
+        }
+        *(uint64_t *)(form + 0x00) = (uint64_t)nodes[0];   // __begin_node_
+        *(uint64_t *)(form + 0x08) = (uint64_t)nodes[0];   // 根
+        *(uint64_t *)(form + 0x10) = (uint64_t)npair;      // size
+        xrc_log(@"[om] force: form = map[%d] 首对 %s=%s", npair,
+                (char *)nodes[0] + 0x20, (char *)nodes[0] + 0x38);
     }
 
     // X2 ≠ NULL。上一版传 NULL，函数对它做 `[X2+0x18]`（崩溃报告 vmRegionInfo
@@ -341,9 +463,20 @@ bool xrc_om_force_applog(void) {
     static uint8_t cb[0x100];
     memset(cb, 0, sizeof(cb));
 
-    // 暂存已知明文到载荷区间（先存旧值，函数若正常返回就还回去）
+    // KPA：载荷区间先指向一块**已知明文**。内容同样由策略给（payload_hex）。
+    // 默认等价于 keyspace 探测串 "XRC-KPA:" 循环 256 字节。
     size_t kpa_len = 0;
-    const uint8_t *kpa = s_kpa_buf(&kpa_len);
+    uint8_t *kpa = NULL;
+    {
+        NSString *hx = s_pol_str(xrc_policy(), @"payload_hex");
+        if (hx) kpa = s_hex_dup(hx, &kpa_len);
+        if (!kpa) {
+            static const char *tag = "XRC-KPA:";
+            kpa_len = XRC_KPA_LEN;
+            kpa = malloc(kpa_len);
+            for (size_t i = 0; i < kpa_len && kpa; i++) kpa[i] = (uint8_t)tag[i % 8];
+        }
+    }
     uint64_t old_beg = s_rd64(obj + XRC_APPLOG_BUF_BEGIN_OFF);
     uint64_t old_end = s_rd64(obj + XRC_APPLOG_BUF_END_OFF);
     if (kpa) {
