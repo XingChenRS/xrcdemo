@@ -15,6 +15,13 @@
 //      plugin_probe:0 误读成 1 —— 真机实测踩过。
 //   3) 探针不再假设字段语义，改为**原始 hex dump**（对象头 + 策略指定的
 //      任意区段/绝对地址），短串解码按本二进制实测的 byte23 约定。
+//
+// v2.2 新增 plugin_raw_applog：以**空表单**直调 OnlineManager 的 slot72
+// （真实实例来自 om_find）。宿主强发会把策略表单注入 X1，body 变成我们给的
+// 内容；空表单则走方法内部 0x100625384 分支（默认构造路径）——这才是游戏
+// 自然调用时会走的语义，服务端因此能收到**真实载荷**。
+// 调用形状（this, map, cb）复刻宿主已验证过的强发（X2 必须有合法对象，
+// 否则方法内 [X2+0x18] 崩）。调用后立刻从宿主捕获缓冲取回明文+帧并 dump。
 #import <Foundation/Foundation.h>
 #import <mach/mach.h>
 #include <stdlib.h>
@@ -23,7 +30,7 @@
 #include "xrc_plugin_abi.h"
 #include "XRCProfile.h"
 
-#define PLUGIN_VERSION "2.1"
+#define PLUGIN_VERSION "2.2"
 
 // ---------------------------------------------------------------- 安全内存读
 // vm_read_overwrite：地址未映射时返回 KERN 错误，不会 SIGSEGV。
@@ -257,6 +264,72 @@ static void probe_v2(const xrc_host_t *host, const char *pol) {
     try_vec_strings(host, "om2.108", obj + XRC_OM_OFF_VEC_CAP);
 }
 
+// ---------------------------------------------------------------- 真实 applog 调用
+// no-op 回调（X2）。形状复刻宿主 XRCOMLog 的实现：__base 的对象布局里
+// __f_ 指针在 +0x18；虚表 [2] 是 __clone()（返回自身即可）。
+static void  s_cb_noop(void) {}
+static void *s_cb_vtbl[8];
+static struct { void *vtbl; } s_cb_base;
+static uint8_t s_cb[0x40];
+static void *s_cb_clone_self(void) { return (void *)&s_cb_base; }
+
+static void hex_dump_lines(const xrc_host_t *host, const char *tag,
+                           const uint8_t *b, size_t n) {
+    for (size_t off = 0; off < n; off += 32) {
+        char line[32 * 3 + 1];
+        size_t k = 0, m = n - off < 32 ? n - off : 32;
+        for (size_t i = 0; i < m; i++)
+            k += (size_t)snprintf(line + k, sizeof(line) - k, "%02x", b[off + i]);
+        host->log("[%s] %04zx: %s", tag, off, line);
+    }
+}
+
+static void call_real_applog(const xrc_host_t *host) {
+    uint64_t obj = host->om_find ? host->om_find() : 0;
+    if (!obj) { host->log("[raw] OM 未定位"); return; }
+    uint64_t fn = rd64(rd64(obj) + 0x240);
+    if (!fn) { host->log("[raw] slot72 为空"); return; }
+
+    // 空 libc++ std::map：begin == &end_node（=map+8），size=0。
+    // 方法内空判据：ldr x26,[X1]; cmp x26, X1+8 → 相等即空 → 走默认构造分支。
+    static uint8_t map[0x40];
+    memset(map, 0, sizeof(map));
+    *(uint64_t *)(map)      = (uint64_t)(uintptr_t)(map + 8);
+    *(uint64_t *)(map + 8)  = 0;
+    *(uint64_t *)(map + 16) = 0;
+
+    memset(s_cb, 0, sizeof(s_cb));
+    if (!s_cb_vtbl[0]) {
+        for (int i = 0; i < 8; i++) s_cb_vtbl[i] = (void *)&s_cb_noop;
+        s_cb_vtbl[2] = (void *)&s_cb_clone_self;
+        s_cb_base.vtbl = s_cb_vtbl;
+    }
+    *(uint64_t *)(s_cb + 0x18) = (uint64_t)(uintptr_t)&s_cb_base;
+
+    host->log("[raw] 调用 slot72 fn=%llx obj=%llx map=%p cb=%p",
+              (unsigned long long)fn, (unsigned long long)obj, map, s_cb);
+    ((void (*)(uint64_t, void *, void *))(uintptr_t)fn)(obj, map, s_cb);
+    host->log("[raw] 调用返回");
+
+    // 立刻取回捕获（宿主在 BRK 处理器里存的），防止后续任何异常丢帧
+    static uint8_t cap[0x1000];
+    size_t n1 = host->brk_capture_take ? host->brk_capture_take(cap, sizeof(cap)) : 0;
+    if (n1) {
+        host->log("[raw] 明文捕获 %zu 字节:", n1);
+        hex_dump_lines(host, "raw.plain", cap, n1 > 0x200 ? 0x200 : n1);
+    } else {
+        host->log("[raw] 无明文捕获（obj+0x128 未被写/无效）");
+    }
+    size_t n2 = host->brk_blob_take ? host->brk_blob_take(cap, sizeof(cap)) : 0;
+    if (n2) {
+        host->log("[raw] 帧捕获 %zu 字节, sp=%llx",
+                  n2, (unsigned long long)(host->brk_blob_sp ? host->brk_blob_sp() : 0));
+        hex_dump_lines(host, "raw.frame", cap, n2);
+    } else {
+        host->log("[raw] 无帧捕获");
+    }
+}
+
 // ---------------------------------------------------------------- 入口
 int xrc_plugin_main(const xrc_host_t *host) {
     if (!host || host->abi < XRC_PLUGIN_ABI_V1) {
@@ -285,6 +358,11 @@ int xrc_plugin_main(const xrc_host_t *host) {
             bool ok = host->om_force_applog();
             host->log("force_applog -> %d", (int)ok);
         }
+    }
+    v = 0;
+    if (pol && pol_get_num(pol, "plugin_raw_applog", &v) && v == 1) {
+        host->log("→ raw_applog（空表单直调 slot72）");
+        call_real_applog(host);
     }
 
     free(raw);
