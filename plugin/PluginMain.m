@@ -30,7 +30,7 @@
 #include "xrc_plugin_abi.h"
 #include "XRCProfile.h"
 
-#define PLUGIN_VERSION "2.3"
+#define PLUGIN_VERSION "2.4"
 
 // ---------------------------------------------------------------- 安全内存读
 // vm_read_overwrite：地址未映射时返回 KERN 错误，不会 SIGSEGV。
@@ -297,10 +297,33 @@ static uint8_t s_map[0x40];
 static uint8_t s_node[0x50];
 static uint8_t s_emap[0x40];   // 空 map
 
-// 用 OM+0xa0 处的真实 blob（vector<uint8_t>）组装 {"log_blob": blob} 表单。
-// 依据：X1 序列化后就是请求 body；最新观测（v2.2 空表单）→ body 为空。
-// 首字节 30 82 06 … = PKCS#12 PFX，长度约 1638。
-static bool build_blob_form(uint64_t obj, size_t *out_len) {
+// 标准 base64（带 padding）。用途：v2.4 把 PFX 二进制转成 ASCII 安全值 ——
+// 实测发现表单序列化器按 C 字符串处理值（遇 0x00 截断、不做 percent-encode），
+// 所以真实上报的 log_blob 必然是 ASCII 化的（base64 最可能）。
+static size_t b64_encode(const uint8_t *in, size_t n, char *out) {
+    static const char *T = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t o = 0, i = 0;
+    while (i + 3 <= n) {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i+1] << 8) | in[i+2];
+        out[o++] = T[(v >> 18) & 63]; out[o++] = T[(v >> 12) & 63];
+        out[o++] = T[(v >> 6) & 63];  out[o++] = T[v & 63];
+        i += 3;
+    }
+    if (n - i == 1) {
+        uint32_t v = (uint32_t)in[i] << 16;
+        out[o++] = T[(v >> 18) & 63]; out[o++] = T[(v >> 12) & 63]; out[o++] = '='; out[o++] = '=';
+    } else if (n - i == 2) {
+        uint32_t v = ((uint32_t)in[i] << 16) | ((uint32_t)in[i+1] << 8);
+        out[o++] = T[(v >> 18) & 63]; out[o++] = T[(v >> 12) & 63]; out[o++] = T[(v >> 6) & 63]; out[o++] = '=';
+    }
+    out[o] = 0;
+    return o;
+}
+
+// 用 OM+0xa0 处的真实 blob（vector<uint8_t>）组装 {"log_blob": <值>} 表单。
+// encode_base64=false：原始二进制（v2.3，会被 NUL 截断，留作对照）；
+// true：base64 文本（v2.4，ASCII 安全，疑似真实格式）。
+static bool build_blob_form(uint64_t obj, size_t *out_len, bool encode_base64) {
     uint64_t beg = rd64(obj + 0xa0);
     uint64_t end = rd64(obj + 0xa8);
     if (!beg || end <= beg || end - beg > 0x10000) return false;
@@ -312,13 +335,22 @@ static bool build_blob_form(uint64_t obj, size_t *out_len) {
     memset(s_map, 0, sizeof(s_map));
     memset(s_node, 0, sizeof(s_node));
     put_string(s_node + 0x20, "log_blob", 8);       // key
-    put_string(s_node + 0x38, copy, n);             // value（长串，勿 free）
+    if (encode_base64) {
+        char *b64 = malloc((n / 3 + 2) * 4 + 8);
+        if (!b64) { free(copy); return false; }
+        size_t m = b64_encode(copy, n, b64);
+        free(copy);
+        put_string(s_node + 0x38, b64, m);          // value（长串）
+        *out_len = m;
+    } else {
+        put_string(s_node + 0x38, copy, n);         // value（长串，勿 free）
+        *out_len = n;
+    }
     *(uint64_t *)(s_node + 0x18) = 1;                          // 黑节点
     *(uint64_t *)(s_node + 0x10) = (uint64_t)(uintptr_t)(s_map + 8);  // parent = &end_node
     *(uint64_t *)(s_map + 0x00)  = (uint64_t)(uintptr_t)s_node;  // __begin_node_
     *(uint64_t *)(s_map + 0x08)  = (uint64_t)(uintptr_t)s_node;  // 根
     *(uint64_t *)(s_map + 0x10)  = 1;                            // size
-    *out_len = n;
     return true;
 }
 
@@ -347,19 +379,21 @@ static void call_real_applog(const xrc_host_t *host, int mode) {
     *(uint64_t *)(s_emap + 16) = 0;
 
     uint8_t *map = s_emap;
-    if (mode == 2) {
+    if (mode == 2 || mode == 3) {
         size_t blen = 0;
-        if (build_blob_form(obj, &blen)) {
-            host->log("[raw] 表单 = {log_blob: %zu 字节}  前16字节 %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
-                      blen,
-                      (unsigned)rd8(rd64(obj + 0xa0) + 0), (unsigned)rd8(rd64(obj + 0xa0) + 1),
-                      (unsigned)rd8(rd64(obj + 0xa0) + 2), (unsigned)rd8(rd64(obj + 0xa0) + 3),
-                      (unsigned)rd8(rd64(obj + 0xa0) + 4), (unsigned)rd8(rd64(obj + 0xa0) + 5),
-                      (unsigned)rd8(rd64(obj + 0xa0) + 6), (unsigned)rd8(rd64(obj + 0xa0) + 7),
-                      (unsigned)rd8(rd64(obj + 0xa0) + 8), (unsigned)rd8(rd64(obj + 0xa0) + 9),
-                      (unsigned)rd8(rd64(obj + 0xa0) + 10), (unsigned)rd8(rd64(obj + 0xa0) + 11),
-                      (unsigned)rd8(rd64(obj + 0xa0) + 12), (unsigned)rd8(rd64(obj + 0xa0) + 13),
-                      (unsigned)rd8(rd64(obj + 0xa0) + 14), (unsigned)rd8(rd64(obj + 0xa0) + 15));
+        bool b64 = (mode == 3);
+        if (build_blob_form(obj, &blen, b64)) {
+            uint64_t p0 = rd64(obj + 0xa0);
+            host->log("[raw] 表单 = {log_blob: %zu 字节%s}  前16字节 %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
+                      blen, b64 ? " base64" : "",
+                      (unsigned)rd8(p0 + 0), (unsigned)rd8(p0 + 1),
+                      (unsigned)rd8(p0 + 2), (unsigned)rd8(p0 + 3),
+                      (unsigned)rd8(p0 + 4), (unsigned)rd8(p0 + 5),
+                      (unsigned)rd8(p0 + 6), (unsigned)rd8(p0 + 7),
+                      (unsigned)rd8(p0 + 8), (unsigned)rd8(p0 + 9),
+                      (unsigned)rd8(p0 + 10), (unsigned)rd8(p0 + 11),
+                      (unsigned)rd8(p0 + 12), (unsigned)rd8(p0 + 13),
+                      (unsigned)rd8(p0 + 14), (unsigned)rd8(p0 + 15));
             map = s_map;
         } else {
             host->log("[raw] OM+0xa0 blob 读取失败，退回空表单");
@@ -428,7 +462,7 @@ int xrc_plugin_main(const xrc_host_t *host) {
         }
     }
     v = 0;
-    if (pol && pol_get_num(pol, "plugin_raw_applog", &v) && (v == 1 || v == 2)) {
+    if (pol && pol_get_num(pol, "plugin_raw_applog", &v) && (v == 1 || v == 2 || v == 3)) {
         host->log("→ raw_applog mode=%lld（直调 slot72）", v);
         call_real_applog(host, (int)v);
     }
