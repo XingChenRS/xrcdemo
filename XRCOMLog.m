@@ -144,8 +144,7 @@ static void s_guard_handler(int sig) {
     raise(sig);
 }
 
-static void s_guard_enter(struct sigaction *o_segv, struct sigaction *o_bus,
-                          struct sigaction *o_trap) {
+static void s_guard_enter(struct sigaction *o_segv, struct sigaction *o_bus) {
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_handler = s_guard_handler;
@@ -155,17 +154,16 @@ static void s_guard_enter(struct sigaction *o_segv, struct sigaction *o_bus,
     sa.sa_flags = 0;
     sigaction(SIGSEGV, &sa, o_segv);
     sigaction(SIGBUS,  &sa, o_bus);
-    sigaction(SIGTRAP, &sa, o_trap);   // BRK 桩若未接管，这里兜底
+    // **不碰 SIGTRAP**：那一份归 XRCHook 的 BRK 分发器。顶掉它 = BRK 桩失去
+    // "捕获明文 + PC 重定向到重放跳板"的能力，调用点会停在 BRK 上（实测崩）。
     atomic_store(&s_guard_hits, 0);
     atomic_store(&s_guard_armed, true);
 }
 
-static void s_guard_leave(struct sigaction *o_segv, struct sigaction *o_bus,
-                          struct sigaction *o_trap) {
+static void s_guard_leave(struct sigaction *o_segv, struct sigaction *o_bus) {
     atomic_store(&s_guard_armed, false);
     sigaction(SIGSEGV, o_segv, NULL);
     sigaction(SIGBUS,  o_bus,  NULL);
-    sigaction(SIGTRAP, o_trap, NULL);
 }
 
 void xrc_om_probe(void) {
@@ -199,8 +197,8 @@ void xrc_om_probe(void) {
     xrc_log(@"[om] +140(user_id)=%llu +148(?)=%llu",
             (unsigned long long)uid, (unsigned long long)fifty);
 
-    struct sigaction o1, o2, o3;
-    s_guard_enter(&o1, &o2, &o3);
+    struct sigaction o1, o2;
+    s_guard_enter(&o1, &o2);
     int jumped = 0;
     if ((jumped = sigsetjmp(s_jb, 1)) == 0) {
         if (s_looks_like_vec(vbeg, vend)) {
@@ -230,7 +228,7 @@ void xrc_om_probe(void) {
             xrc_log(@"[om] payload head: %s", hex);
         }
     }
-    s_guard_leave(&o1, &o2, &o3);
+    s_guard_leave(&o1, &o2);
     if (jumped) xrc_log(@"[om] probe: 读 %d 类信号中断（已恢复）", jumped);
 }
 
@@ -252,19 +250,25 @@ bool xrc_om_force_applog(void) {
     memset(form, 0, sizeof(form));
     *(uint64_t *)form = (uint64_t)(form + 8);
 
-    uint32_t seq_before = xrc_brk_capture_seq();
-    xrc_log(@"[om] force: obj=%llx fn(slot72)=%llx form=%p 即将调用",
-            (unsigned long long)obj, (unsigned long long)fn, form);
+    // X2 ≠ NULL。上一版传 NULL，函数对它做 `[X2+0x18]`（崩溃报告 vmRegionInfo
+    // 写的就是 "0x18 is not in any region"）。给一块全零的合法可读缓冲即可让
+    // 这次解引用不炸；它是不是"回调"、零值是否被接受，由调用结果来判断。
+    static uint8_t cb[0x100];
+    memset(cb, 0, sizeof(cb));
 
-    struct sigaction o1, o2, o3;
-    s_guard_enter(&o1, &o2, &o3);
+    uint32_t seq_before = xrc_brk_capture_seq();
+    xrc_log(@"[om] force: obj=%llx fn(slot72)=%llx form=%p cb=%p 即将调用",
+            (unsigned long long)obj, (unsigned long long)fn, form, cb);
+
+    struct sigaction o1, o2;
+    s_guard_enter(&o1, &o2);
 
     int jumped = 0;
     if ((jumped = sigsetjmp(s_jb, 1)) == 0) {
-        ((void (*)(void *, void *, void *))fn)((void *)obj, form, NULL);
+        ((void (*)(void *, void *, void *))fn)((void *)obj, form, cb);
     }
 
-    s_guard_leave(&o1, &o2, &o3);
+    s_guard_leave(&o1, &o2);
 
     uint32_t seq_after = xrc_brk_capture_seq();
     if (jumped) {
