@@ -30,7 +30,7 @@
 #include "xrc_plugin_abi.h"
 #include "XRCProfile.h"
 
-#define PLUGIN_VERSION "2.2"
+#define PLUGIN_VERSION "2.3"
 
 // ---------------------------------------------------------------- 安全内存读
 // vm_read_overwrite：地址未映射时返回 KERN 错误，不会 SIGSEGV。
@@ -273,6 +273,55 @@ static struct { void *vtbl; } s_cb_base;
 static uint8_t s_cb[0x40];
 static void *s_cb_clone_self(void) { return (void *)&s_cb_base; }
 
+// libc++ std::string 写入（与宿主 s_put_string 同一套实测约定）：
+// ≤22 内联、byte23 记长度；否则长串 {ptr, size, cap|1<<63}。
+static void put_string(uint8_t *dst, const void *src, size_t n) {
+    const uint8_t *s = (const uint8_t *)src;
+    if (n <= 22) {
+        memcpy(dst, s, n);
+        dst[n] = 0;
+        dst[23] = (uint8_t)n;
+    } else {
+        uint8_t *buf = malloc(n + 1);
+        if (!buf) return;
+        memcpy(buf, s, n);
+        buf[n] = 0;
+        *(uint64_t *)dst      = (uint64_t)(uintptr_t)buf;
+        *(uint64_t *)(dst + 8)  = n;
+        *(uint64_t *)(dst + 16) = n | (1ULL << 63);
+    }
+}
+
+// 单对 std::map 的容器/节点静态区（宿主同款右倾链的退化形态）
+static uint8_t s_map[0x40];
+static uint8_t s_node[0x50];
+static uint8_t s_emap[0x40];   // 空 map
+
+// 用 OM+0xa0 处的真实 blob（vector<uint8_t>）组装 {"log_blob": blob} 表单。
+// 依据：X1 序列化后就是请求 body；最新观测（v2.2 空表单）→ body 为空。
+// 首字节 30 82 06 … = PKCS#12 PFX，长度约 1638。
+static bool build_blob_form(uint64_t obj, size_t *out_len) {
+    uint64_t beg = rd64(obj + 0xa0);
+    uint64_t end = rd64(obj + 0xa8);
+    if (!beg || end <= beg || end - beg > 0x10000) return false;
+    size_t n = (size_t)(end - beg);
+    uint8_t *copy = malloc(n);
+    if (!copy) return false;
+    if (!rd(beg, copy, n)) { free(copy); return false; }
+
+    memset(s_map, 0, sizeof(s_map));
+    memset(s_node, 0, sizeof(s_node));
+    put_string(s_node + 0x20, "log_blob", 8);       // key
+    put_string(s_node + 0x38, copy, n);             // value（长串，勿 free）
+    *(uint64_t *)(s_node + 0x18) = 1;                          // 黑节点
+    *(uint64_t *)(s_node + 0x10) = (uint64_t)(uintptr_t)(s_map + 8);  // parent = &end_node
+    *(uint64_t *)(s_map + 0x00)  = (uint64_t)(uintptr_t)s_node;  // __begin_node_
+    *(uint64_t *)(s_map + 0x08)  = (uint64_t)(uintptr_t)s_node;  // 根
+    *(uint64_t *)(s_map + 0x10)  = 1;                            // size
+    *out_len = n;
+    return true;
+}
+
 static void hex_dump_lines(const xrc_host_t *host, const char *tag,
                            const uint8_t *b, size_t n) {
     for (size_t off = 0; off < n; off += 32) {
@@ -284,19 +333,38 @@ static void hex_dump_lines(const xrc_host_t *host, const char *tag,
     }
 }
 
-static void call_real_applog(const xrc_host_t *host) {
+// mode 1 = 空表单（直通语义验证）；mode 2 = {log_blob: OM+0xa0 真实 blob}
+static void call_real_applog(const xrc_host_t *host, int mode) {
     uint64_t obj = host->om_find ? host->om_find() : 0;
     if (!obj) { host->log("[raw] OM 未定位"); return; }
     uint64_t fn = rd64(rd64(obj) + 0x240);
     if (!fn) { host->log("[raw] slot72 为空"); return; }
 
     // 空 libc++ std::map：begin == &end_node（=map+8），size=0。
-    // 方法内空判据：ldr x26,[X1]; cmp x26, X1+8 → 相等即空 → 走默认构造分支。
-    static uint8_t map[0x40];
-    memset(map, 0, sizeof(map));
-    *(uint64_t *)(map)      = (uint64_t)(uintptr_t)(map + 8);
-    *(uint64_t *)(map + 8)  = 0;
-    *(uint64_t *)(map + 16) = 0;
+    memset(s_emap, 0, sizeof(s_emap));
+    *(uint64_t *)(s_emap)      = (uint64_t)(uintptr_t)(s_emap + 8);
+    *(uint64_t *)(s_emap + 8)  = 0;
+    *(uint64_t *)(s_emap + 16) = 0;
+
+    uint8_t *map = s_emap;
+    if (mode == 2) {
+        size_t blen = 0;
+        if (build_blob_form(obj, &blen)) {
+            host->log("[raw] 表单 = {log_blob: %zu 字节}  前16字节 %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x",
+                      blen,
+                      (unsigned)rd8(rd64(obj + 0xa0) + 0), (unsigned)rd8(rd64(obj + 0xa0) + 1),
+                      (unsigned)rd8(rd64(obj + 0xa0) + 2), (unsigned)rd8(rd64(obj + 0xa0) + 3),
+                      (unsigned)rd8(rd64(obj + 0xa0) + 4), (unsigned)rd8(rd64(obj + 0xa0) + 5),
+                      (unsigned)rd8(rd64(obj + 0xa0) + 6), (unsigned)rd8(rd64(obj + 0xa0) + 7),
+                      (unsigned)rd8(rd64(obj + 0xa0) + 8), (unsigned)rd8(rd64(obj + 0xa0) + 9),
+                      (unsigned)rd8(rd64(obj + 0xa0) + 10), (unsigned)rd8(rd64(obj + 0xa0) + 11),
+                      (unsigned)rd8(rd64(obj + 0xa0) + 12), (unsigned)rd8(rd64(obj + 0xa0) + 13),
+                      (unsigned)rd8(rd64(obj + 0xa0) + 14), (unsigned)rd8(rd64(obj + 0xa0) + 15));
+            map = s_map;
+        } else {
+            host->log("[raw] OM+0xa0 blob 读取失败，退回空表单");
+        }
+    }
 
     memset(s_cb, 0, sizeof(s_cb));
     if (!s_cb_vtbl[0]) {
@@ -306,8 +374,8 @@ static void call_real_applog(const xrc_host_t *host) {
     }
     *(uint64_t *)(s_cb + 0x18) = (uint64_t)(uintptr_t)&s_cb_base;
 
-    host->log("[raw] 调用 slot72 fn=%llx obj=%llx map=%p cb=%p",
-              (unsigned long long)fn, (unsigned long long)obj, map, s_cb);
+    host->log("[raw] 调用 slot72 fn=%llx obj=%llx map=%p cb=%p mode=%d",
+              (unsigned long long)fn, (unsigned long long)obj, map, s_cb, mode);
     ((void (*)(uint64_t, void *, void *))(uintptr_t)fn)(obj, map, s_cb);
     host->log("[raw] 调用返回");
 
@@ -360,9 +428,9 @@ int xrc_plugin_main(const xrc_host_t *host) {
         }
     }
     v = 0;
-    if (pol && pol_get_num(pol, "plugin_raw_applog", &v) && v == 1) {
-        host->log("→ raw_applog（空表单直调 slot72）");
-        call_real_applog(host);
+    if (pol && pol_get_num(pol, "plugin_raw_applog", &v) && (v == 1 || v == 2)) {
+        host->log("→ raw_applog mode=%lld（直调 slot72）", v);
+        call_real_applog(host, (int)v);
     }
 
     free(raw);
