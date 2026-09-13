@@ -302,29 +302,37 @@ bool xrc_om_force_applog(void) {
     uint64_t fn = s_strip(s_rd64(vptr + 8 * XRC_OM_APPLOG_SLOT));
     if (!fn) { xrc_log(@"[om] force: 槽 72 为空"); return false; }
 
-    // X1 = 请求表单容器。
+    // X1 = 请求表单容器 = **std::map<std::string, std::string>**（libc++）。
     //
-    // 结构来自 0x10062522C 的循环（完整反汇编核对）：
-    //   · 元素是**指针**（8 字节步长），"没有更多"的判据是 [slot] == slot地址 + 8
-    //   · 元素对象里是**一对** std::string：
-    //       key   @ +0x20（flag @ +0x37, size @ +0x28）
-    //       value @ +0x38（flag @ +0x4F, size @ +0x40）
-    //   · 拼接语义：`strh '='` 写在 key 末尾 → "key="，再 append value
-    // 上一版只给了 key、+0x38 全零，所以没走到。这一版两个都给。
-    static uint8_t  form[0x200];
-    static uint8_t  elem[0x80];
+    // 依据（0x10062522C..0x100625380 整段反汇编）：
+    //   · 空判据 `[X1] == X1+8` —— 正是 libc++ map 的 `__begin_node_ == &__end_node_`
+    //   · 首轮把 `x19 = X1+8`（&__end_node_）存为迭代终止哨兵
+    //   · 循环尾部 0x100625348 是红黑树迭代器的 next：
+    //       [node+8] 下探、[node+0x10] = __parent_、`[parent]==node` 判断上行
+    //   · 节点值在 +0x20/+0x38 —— libc++ `__tree_node` = 0x20 节点头 +
+    //       `pair<const string,string>`（key@+0x20, value@+0x38）
+    //
+    // 单节点树的摆法（要让上面那个 next 正好绕回哨兵）：
+    //   node+0x00/0x08 = 0（无子）、node+0x10 = &__end_node_、node+0x18 = 1（黑）
+    //   map+0x00 = node（__begin_node_）、map+0x08 = node（__end_node_.__left_ = 根）
+    //   map+0x10 = 1（size）
+    static uint8_t form[0x40];
+    static uint8_t node[0x50];
     memset(form, 0, sizeof(form));
-    memset(elem, 0, sizeof(elem));
+    memset(node, 0, sizeof(node));
     {
         static const char *k = "log_blob";
         static const char *v = "XRCTEST";
         size_t kn = strlen(k), vn = strlen(v);
-        memcpy(elem + 0x20, k, kn);
-        elem[0x20 + 23] = (uint8_t)((kn << 1) | 1);   // 短串：flag = (len<<1)|1
-        memcpy(elem + 0x38, v, vn);
-        elem[0x38 + 23] = (uint8_t)((vn << 1) | 1);
-        *(uint64_t *)(form + 0) = (uint64_t)elem;
-        *(uint64_t *)(form + 8) = (uint64_t)(form + 16);
+        memcpy(node + 0x20, k, kn);
+        node[0x20 + 23] = (uint8_t)((kn << 1) | 1);   // 短串：flag = (len<<1)|1
+        memcpy(node + 0x38, v, vn);
+        node[0x38 + 23] = (uint8_t)((vn << 1) | 1);
+        *(uint64_t *)(node + 0x10) = (uint64_t)(form + 8);  // __parent_ = &__end_node_
+        *(uint64_t *)(node + 0x18) = 1;                     // __is_black_
+        *(uint64_t *)(form + 0x00) = (uint64_t)node;        // __begin_node_
+        *(uint64_t *)(form + 0x08) = (uint64_t)node;        // 根
+        *(uint64_t *)(form + 0x10) = 1;                     // size
     }
 
     // X2 ≠ NULL。上一版传 NULL，函数对它做 `[X2+0x18]`（崩溃报告 vmRegionInfo
