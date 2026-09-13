@@ -389,6 +389,16 @@ static uint8_t *s_hex_dup(NSString *hex, size_t *out_len) {
     return b;
 }
 
+// ---- X2（完成回调）用的"空实现"类型擦除体 ----
+// 结构见下方强发函数里的注释（sub_10001C8D0 实证：__f_ 在 +0x18，
+// 虚表 [2]=__clone、[3]=__clone(dest)、[6]=operator()）。
+static void   s_cb_noop(void) {}
+static void  *s_cb_vtbl[8];
+static struct { void *vtbl; } s_cb_base;
+static uint8_t s_cb[0x40];
+static bool    s_cb_ready = false;
+static void  *s_cb_clone_self(void) { return (void *)&s_cb_base; }
+
 // ---------------------------------------------------------------- 强发槽 72
 #define XRC_KPA_LEN 256
 static uint8_t *s_kpa = NULL;
@@ -469,11 +479,29 @@ bool xrc_om_force_applog(void) {
                 (char *)nodes[0] + 0x20, (char *)nodes[0] + 0x38);
     }
 
-    // X2 ≠ NULL。上一版传 NULL，函数对它做 `[X2+0x18]`（崩溃报告 vmRegionInfo
-    // 写的就是 "0x18 is not in any region"）。给一块全零的合法可读缓冲即可让
-    // 这次解引用不炸；它是不是"回调"、零值是否被接受，由调用结果来判断。
-    static uint8_t cb[0x100];
-    memset(cb, 0, sizeof(cb));
+    // X2 = 完成回调（类型擦除可调用体的引用）。
+    //
+    // 结构（sub_10001C8D0 反汇编实证）：
+    //     ldr x0,[X2,#0x18]              ; __f_ 就在这里，不在 +0
+    //     if (__f_ == 0)      → 视为空
+    //     if (__f_ == X2)     → SBO 内联，调 [vtable+0x18] __clone(dest)
+    //     else                → 堆上对象，调 [vtable+0x10] __clone() 取新指针
+    // 槽位与 libc++ __base 逐一对应：[2]=__clone、[3]=__clone(dest)、
+    // [4][5]=destroy、**[6]=operator()**（调用走这个）。
+    //
+    // 传 NULL 会崩在 0x18（就是上面第一条解引用）—— 崩溃报告 vmRegionInfo
+    // "0x18 is not in any region" 逐字对上。传全零缓冲则 __f_=0 被判空，
+    // 响应回来调 operator() 时又是空调用 → 照样崩。
+    // 所以这里造一个**真正的空实现**：虚表全指向 no-op，__clone 返回自身，
+    // 这样 HTTP 回调触达时什么也不做，不再带走进程。
+    if (!s_cb_ready) {
+        for (int i = 0; i < 8; i++) s_cb_vtbl[i] = (void *)s_cb_noop;
+        s_cb_vtbl[2] = (void *)s_cb_clone_self;   // __clone() 必须回合法指针
+        s_cb_base.vtbl = s_cb_vtbl;
+        memset(s_cb, 0, sizeof(s_cb));
+        *(uint64_t *)(s_cb + 0x18) = (uint64_t)&s_cb_base;   // __f_
+        s_cb_ready = true;
+    }
 
     // KPA：载荷区间先指向一块**已知明文**。内容同样由策略给（payload_hex）。
     // 默认等价于 keyspace 探测串 "XRC-KPA:" 循环 256 字节。
@@ -500,14 +528,14 @@ bool xrc_om_force_applog(void) {
 
     uint32_t seq_before = xrc_brk_capture_seq();
     xrc_log(@"[om] force: obj=%llx fn(slot72)=%llx form=%p cb=%p 即将调用",
-            (unsigned long long)obj, (unsigned long long)fn, form, cb);
+            (unsigned long long)obj, (unsigned long long)fn, form, s_cb);
 
     struct sigaction o1, o2;
     s_guard_enter(&o1, &o2);
 
     int jumped = 0;
     if ((jumped = sigsetjmp(s_jb, 1)) == 0) {
-        ((void (*)(void *, void *, void *))fn)((void *)obj, form, cb);
+        ((void (*)(void *, void *, void *))fn)((void *)obj, form, s_cb);
     }
 
     s_guard_leave(&o1, &o2);
