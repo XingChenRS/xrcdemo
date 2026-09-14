@@ -136,7 +136,7 @@
 #define XRC_HAS_BRK_HOOK            1
 #define XRC_BRK_APPLOG_SITE_OFF     (0x623AECULL)   // sub_100623AEC 入口（VA 0x100623AEC）
 #define XRC_BRK_APPLOG_REPLAY_OFF   (0x1468040ULL)  // 重放跳板（__TEXT 空白页，VA 0x101468040）
-#define XRC_BRK_MAX_SLOTS           8
+#define XRC_BRK_MAX_SLOTS           64
 
 // 第二个桩点：log_blob 组装处（密文出口）。
 // 出处: 2026-09-12 静态定位 + 2026-09-13 真机验证。
@@ -174,6 +174,35 @@
 #define XRC_APPLOG_BUF_BEGIN_OFF    (0x128)   // OnlineManager → uint8* 明文起点
 #define XRC_APPLOG_BUF_END_OFF      (0x130)   // OnlineManager → uint8* 明文终点
 #define XRC_BRK_CAP_MAX             (1u << 20)  // 单次捕获上限 1MB（超出只记长度）
+
+// ---------------- BRK 桩：拥有/解锁链（可控开关，功能账 §1）----------------
+// 出处: research/notes/xrc-feature-hooks-ledger-2026-09-14.md §1.1（2026-09-14 重定位）。
+// 逐字节对照（vs 6.13.10）：层1 全等；层2 仅 8 处 BL 目标重定位（22B 差）；层3 仅 BL 目标；
+// 故事门重编译（47B 差，序言 16B 全等，尾 = return 层1查表(bool)）。
+// 语义：开关（xrc_brk_set_unlock_all）置真 → handler 强制 `x0=1; PC=LR` 直返；
+// 置假 → 走重放跳板，行为与未注入完全一致。
+#define XRC_BRK_UNLOCK_L1_SITE_OFF   (0xBE46ACULL)  // 层1 第 2 条指令（首条 CBZ X1 是
+                                                    // PC 相关指令、不可重放；本条 LDR 安全）
+#define XRC_BRK_UNLOCK_L1_REPLAY_OFF (0x1468058ULL)
+#define XRC_BRK_UNLOCK_L2_SITE_OFF   (0xBE46ECULL)  // 层2 入口（SUB SP,SP,#0x80）
+#define XRC_BRK_UNLOCK_L2_REPLAY_OFF (0x1468060ULL)
+#define XRC_BRK_UNLOCK_L3_SITE_OFF   (0xBE4D38ULL)  // 层3 入口（STP X29,X30,[SP,#-0x10]!）
+#define XRC_BRK_UNLOCK_L3_REPLAY_OFF (0x1468068ULL)
+#define XRC_BRK_STORY_SITE_OFF       (0x9346E0ULL)  // 故事门入口（SUB SP,SP,#0x70；返回 bool）
+#define XRC_BRK_STORY_REPLAY_OFF     (0x1468070ULL)
+
+// ---------------- BRK 桩：cb 验证链（可开关，功能账 §3）----------------
+// 出处: research/notes/xrc-feature-hooks-ledger-2026-09-14.md §3（2026-09-14 重定位，
+// 6.13→7.0 逐函数字节/结构证据）。开关（xrc_brk_set_cb_bypass）置真：
+//   cb_ready    → 就绪位恒真（w0=1 直返）；covers 冷启动 caller A 尾部的就绪判定
+//   cb_verify   → 全树校验整体跳过（void 入口直返）
+//   cb_dispatch → 更新错码分发整体跳过（void 入口直返；弹窗/返回标题不再发生）
+#define XRC_BRK_CB_READY_SITE_OFF    (0xF43274ULL)  // LDRB W0,[X0,#0xA]; RET（8B 函数）
+#define XRC_BRK_CB_READY_REPLAY_OFF  (0x1468078ULL)
+#define XRC_BRK_CB_VERIFY_SITE_OFF   (0xF43FFCULL)  // cb 全树校验入口（STP X28,X27,[SP,#-0x60]!）
+#define XRC_BRK_CB_VERIFY_REPLAY_OFF (0x1468080ULL)
+#define XRC_BRK_CB_DISPATCH_SITE_OFF (0x13C5E8ULL)  // 更新错码分发入口（SUB SP,SP,#0x100）
+#define XRC_BRK_CB_DISPATCH_REPLAY_OFF (0x1468088ULL)
 
 // ---------------- OnlineManager 探针 / applog 强发（XRCOMLog）----------------
 // 出处: 2026-09-12 真机内存转储（incoming/xrcdemo-net-new/mem, 276MB, 972 区域）

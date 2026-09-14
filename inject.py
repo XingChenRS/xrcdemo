@@ -56,13 +56,25 @@ XRC_INFO_VERSION = 2  # blob 版本：v2 = slot 24B + 判定链 ABI
 # 接住并把 PC 指向重放跳板。跳板 = 原始指令 + B 回 site+4，共 8B。
 # 与判定桩的 40B 跳板（fileoff 0x146800C..0x1468034）不重叠。
 BRK_INSN = struct.pack("<I", 0xD4200000)
-# (名称, site VA, replay VA) —— replay 必须落在 __TEXT 空白页且互不重叠
+# (名称, site VA, replay VA, 原字节 hex 或 None) —— replay 必须落在 __TEXT 空白页且互不重叠。
+# replay 区分配：judge 跳板 0x146800C..0x1468034；BRK 重放自 0x1468040 起，8B/桩。
+# expect 非 None 时做"原字节断言"（防版本漂移；已打桩的二进制跳过断言）。
 BRK_HOOKS = [
-    ("applog_send", 0x100623AEC, 0x101468040),   # sub_100623AEC 入口（OnlineManager 槽 72）
+    ("applog_send", 0x100623AEC, 0x101468040, None),   # sub_100623AEC 入口（OnlineManager 槽 72）
     # log_blob 组装处（密文出口）：待发送的 std::string 在 sp+0x290。
     # 选 0x1006399E4（add x0,sp,#var_428）而非前一条 ADRL —— ADRL 是 PC 相对指令，
     # 重放跳板在别处执行会算错目标，这里只收 SP 相对/绝对寻址的指令。
-    ("applog_blob", 0x1006399E4, 0x101468050),
+    ("applog_blob", 0x1006399E4, 0x101468050, None),
+    # ---- 拥有/解锁链（功能账 §1.1，2026-09-14 重定位）----
+    # 层1 取第 2 条指令：首条 CBZ X1 是 PC 相关指令、不可重放；本条 LDR X9,[X0,#0x268] 安全。
+    ("unlock_l1",  0x100BE46AC, 0x101468058, "093441f9"),  # 层1 sub_100BE46A8 +4（拥有表线性扫描）
+    ("unlock_l2",  0x100BE46EC, 0x101468060, "ff0302d1"),  # 层2 sub_100BE46EC 入口（SUB SP,#0x80）
+    ("unlock_l3",  0x100BE4D38, 0x101468068, "fd7bbfa9"),  # 层3 sub_100BE4D38 入口（STP X29,X30,[SP,#-0x10]!）
+    ("story_gate", 0x1009346E0, 0x101468070, "ffc301d1"),  # 故事门 sub_1009346E0 入口（SUB SP,#0x70）
+    # ---- cb 验证链（功能账 §3，2026-09-14 重定位）----
+    ("cb_ready",    0x100F43274, 0x101468078, "00a04039"),  # 就绪位 getter（LDRB W0,[X0,#0xA];RET）
+    ("cb_verify",   0x100F43FFC, 0x101468080, "fc6fbaa9"),  # 全树校验入口（STP X28,X27,[SP,#-0x60]!）
+    ("cb_dispatch", 0x10013C5E8, 0x101468088, "ff0304d1"),  # 更新错码分发入口（SUB SP,#0x100）
 ]
 # 重放跳板必须避免 PC 相关指令（ADRP/ADR/B/BL/CBZ/TBZ/LDR-literal）——
 # 跳板在别处执行，PC 相对寻址会算错。这里只做"显然安全"的粗筛并提示。
@@ -213,7 +225,7 @@ def patch_brk_hooks(data: bytearray) -> list[str]:
     """
     logs = []
     base = fat_arm64_slice_offset(bytes(data))
-    for name, site_va, replay_va in BRK_HOOKS:
+    for name, site_va, replay_va, expect in BRK_HOOKS:
         site_file = base + (site_va - 0x100000000)
         replay_file = base + (replay_va - 0x100000000)
         orig = bytes(data[site_file:site_file + 4])
@@ -222,6 +234,11 @@ def patch_brk_hooks(data: bytearray) -> list[str]:
         if orig == BRK_INSN:
             logs.append(f"brk[{name}]: already patched @ {site_va:#x}")
             continue
+        if expect is not None and orig.hex() != expect:
+            raise RuntimeError(
+                f"brk[{name}]: site {site_va:#x} bytes {orig.hex()} != expected "
+                f"{expect} — wrong binary version?"
+            )
         w = struct.unpack("<I", orig)[0]
         kind = pc_relative_kind(w)
         if kind:
@@ -442,7 +459,7 @@ def check_binary(path: str) -> int:
     print(f"entry      : {'PATCHED (ADRP/ADD/BR)' if has_stub else 'original (STP ...)'}")
     print(f"trampoline : {'v2 (MOV X3,X6 present)' if stub_v2 else 'v1 or absent'}")
     print(f"slot       : {slot if slot else '-'}")
-    for name, site_va, replay_va in BRK_HOOKS:
+    for name, site_va, replay_va, _expect in BRK_HOOKS:
         sf = base + (site_va - 0x100000000)
         rf = base + (replay_va - 0x100000000)
         insn = struct.unpack_from("<I", raw, sf)[0]

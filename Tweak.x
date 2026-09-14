@@ -200,6 +200,12 @@ static void doBootstrap(void) {
         @try { xrc_probe_run(); }               @catch (NSException *e) { xrc_log(@"probe EX: %@", e); }
         // BRK 桩：验证形态（见 XRCProfile.h）。处理器已在 %ctor 装好，这里只注册桩点。
         @try { xrc_brk_setup(base); }           @catch (NSException *e) { xrc_log(@"brk EX: %@", e); }
+        // 拥有/解锁链开关（功能账 §1）：配置项，默认关；打开后四桩强制"拥有=真"
+        @try { xrc_brk_set_unlock_all(g_cfg.unlock_all); }
+        @catch (NSException *e) { xrc_log(@"unlock flag EX: %@", e); }
+        // cb 验证链开关（功能账 §3）：默认关；打开后就绪恒真+校验/错码分发跳过
+        @try { xrc_brk_set_cb_bypass(g_cfg.cb_bypass); }
+        @catch (NSException *e) { xrc_log(@"cb flag EX: %@", e); }
         // 私服重定向：NSURLConnection 层改写 URL（不改 TLS；换域后 pin 自然放行）
         @try {
             xrc_net_install();

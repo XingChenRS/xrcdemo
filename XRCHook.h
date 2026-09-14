@@ -22,6 +22,17 @@ bool xrc_brk_register(uint64_t site_va, uint64_t replay_va,
 // 按本版本 profile 装配全部桩点（安装处理器 + 注册）。
 void xrc_brk_setup(uint64_t image_base);
 
+// ---- 拥有/解锁链开关（功能账 §1）----
+// 置真后 unlock_l1/l2/l3 + story_gate 四桩的 handler 强制 `x0=1; PC=LR` 直返；
+// 置假恢复原行为（重放跳板）。async-signal-safe：处理器只做原子读。
+void xrc_brk_set_unlock_all(bool on);
+bool xrc_brk_unlock_all(void);
+
+// ---- cb 验证链开关（功能账 §3）----
+// 置真后 cb_ready 恒真、cb_verify/cb_dispatch 整体跳过（改谱面/cb 自由化）。
+void xrc_brk_set_cb_bypass(bool on);
+bool xrc_brk_cb_bypass(void);
+
 // 统计（异步写入，主线程读；供定时器落日志）
 uint32_t    xrc_brk_hits(int slot_index);
 int         xrc_brk_slot_count(void);

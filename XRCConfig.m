@@ -51,6 +51,10 @@ static void s_ensure_defaults(NSMutableDictionary *p) {
     if (!p[@"netEnabled"]) p[@"netEnabled"] = @NO;
     if (!p[@"netBase"])    p[@"netBase"]    = @"http://192.168.110.253:8080";
     if (!p[@"netMatch"])   p[@"netMatch"]   = @"";
+    // 拥有/解锁链开关：默认关闭（打开前先确认已了解风险——服务端成绩校验仍会拒）
+    if (!p[@"unlockAll"])  p[@"unlockAll"]  = @NO;
+    // cb 验证链开关：默认关闭（开 = 改谱面/cb 自由化）
+    if (!p[@"cbBypass"])   p[@"cbBypass"]   = @NO;
 }
 
 NSMutableDictionary *xrc_config_dict(void) {
@@ -109,6 +113,8 @@ void xrc_config_load(xrc_config_t *out) {
     out->net_enabled    = [prefs[@"netEnabled"] boolValue];
     out->net_base       = [prefs[@"netBase"] length] ? prefs[@"netBase"] : nil;
     out->net_match      = [prefs[@"netMatch"] length] ? prefs[@"netMatch"] : nil;
+    out->unlock_all     = [prefs[@"unlockAll"] boolValue];
+    out->cb_bypass      = [prefs[@"cbBypass"] boolValue];
 }
 
 void xrc_config_save(const xrc_config_t *c) {
@@ -124,5 +130,7 @@ void xrc_config_save(const xrc_config_t *c) {
     p[@"netEnabled"]    = @(c->net_enabled);
     p[@"netBase"]       = c->net_base ?: @"";
     p[@"netMatch"]      = c->net_match ?: @"";
+    p[@"unlockAll"]     = @(c->unlock_all);
+    p[@"cbBypass"]      = @(c->cb_bypass);
     xrc_config_write_dict(p);
 }

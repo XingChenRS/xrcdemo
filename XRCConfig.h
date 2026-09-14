@@ -17,6 +17,10 @@ typedef struct {
     BOOL      net_enabled;  // 是否改写 API 请求指向自有服务端
     NSString *net_base;     // 目标 base，如 http://192.168.1.10:8080
     NSString *net_match;    // 需改写的 host（逗号分隔）；空 = 内置默认
+    // ---- 拥有/解锁链开关（功能账 §1）----
+    BOOL      unlock_all;   // 开：拥有链三层 + 故事门强制返回真（可控内容门）
+    // ---- cb 验证链开关（功能账 §3）----
+    BOOL      cb_bypass;    // 开：cb 就绪恒真 + 全树校验/更新错码分发跳过
 } xrc_config_t;
 
 NSString *xrc_config_path(void);

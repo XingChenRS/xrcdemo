@@ -26,6 +26,7 @@
 #import <mach/mach.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dlfcn.h>
 
 #include "xrc_plugin_abi.h"
 #include "XRCProfile.h"
@@ -465,6 +466,46 @@ int xrc_plugin_main(const xrc_host_t *host) {
     if (pol && pol_get_num(pol, "plugin_raw_applog", &v) && (v == 1 || v == 2 || v == 3)) {
         host->log("→ raw_applog mode=%lld（直调 slot72）", v);
         call_real_applog(host, (int)v);
+    }
+
+    // 拥有/解锁链开关（功能账 §1）：策略驱动。热载重触发即生效（无需重启 app）。
+    // 目标函数在外层（libxrcdemo 的 XRCHook），经 RTLD_DEFAULT 动态解析。
+    v = 0;
+    if (pol && pol_get_num(pol, "unlock_all", &v)) {
+        void (*set_unlock)(bool) =
+            (void (*)(bool))dlsym(RTLD_DEFAULT, "xrc_brk_set_unlock_all");
+        if (set_unlock) {
+            set_unlock(v == 1);
+            host->log("→ unlock_all = %lld", v);
+        } else {
+            host->log("→ unlock_all: 外层未导出 xrc_brk_set_unlock_all（需重新注入新外层）");
+        }
+    }
+    // cb 验证链开关（功能账 §3）：同上，策略驱动
+    v = 0;
+    if (pol && pol_get_num(pol, "cb_bypass", &v)) {
+        void (*set_cb)(bool) =
+            (void (*)(bool))dlsym(RTLD_DEFAULT, "xrc_brk_set_cb_bypass");
+        if (set_cb) {
+            set_cb(v == 1);
+            host->log("→ cb_bypass = %lld", v);
+        } else {
+            host->log("→ cb_bypass: 外层未导出 xrc_brk_set_cb_bypass（需重新注入新外层）");
+        }
+    }
+    // 观察：四桩命中统计（unlock_l1/l2/l3/story_gate 是否在跑）
+    v = 0;
+    if (pol && pol_get_num(pol, "unlock_stats", &v) && v == 1) {
+        uint32_t (*hits)(int) = (uint32_t (*)(int))dlsym(RTLD_DEFAULT, "xrc_brk_hits");
+        int      (*count)(void) = (int (*)(void))dlsym(RTLD_DEFAULT, "xrc_brk_slot_count");
+        const char *(*sname)(int) = (const char *(*)(int))dlsym(RTLD_DEFAULT, "xrc_brk_slot_name");
+        if (hits && count && sname) {
+            int n = count();
+            for (int i = 0; i < n; i++)
+                host->log("[unlock] slot %s hits=%u", sname(i), hits(i));
+        } else {
+            host->log("[unlock] 统计接口未找到");
+        }
     }
 
     free(raw);
