@@ -43,7 +43,11 @@ static xrc_brk_slot_t s_slots[XRC_BRK_MAX_SLOTS];
 static _Atomic(int)   s_count = 0;
 static struct sigaction s_prev;
 static bool s_installed = false;
-// 主程序基址（install 时经 dyld 取）——分发器兜底路径用（PC 相关，不能现算）
+// 主程序基址（分发器兜底路径用，PC 相关、不能现算）。
+// 注意：必须用 xrc_image_base()（按名字扫 dyld 找 "Arc-mobile"）——
+// 2026-09-15 血训：_dyld_get_image_header(0) 在越狱环境（Dopamine）下不是主程序，
+// 早期注册全部落到错误地址（patched=0 + 读出路径字符串）→ 真正的 BRK 命中反而链默认 → 崩。
+extern uint64_t xrc_image_base(void);
 static _Atomic(uint64_t) s_main_base = 0;
 // mach_timebase 在安装时算好，处理器内不做非安全调用
 static uint64_t s_tb_num = 1, s_tb_den = 1;
@@ -273,10 +277,10 @@ void xrc_brk_install(void) {
         xrc_log(@"[brk] sigaction(SIGTRAP) FAILED");
         return;
     }
-    atomic_store(&s_main_base, (uint64_t)_dyld_get_image_header(0));
+    atomic_store(&s_main_base, xrc_image_base());
     s_installed = true;
     xrc_log(@"[brk] SIGTRAP handler installed (prev=%p, main=%p)",
-            (void *)s_prev.sa_sigaction, (void *)_dyld_get_image_header(0));
+            (void *)s_prev.sa_sigaction, (void *)atomic_load(&s_main_base));
 }
 
 bool xrc_brk_register(uint64_t site_va, uint64_t replay_va, void (*handler)(void *)) {
