@@ -75,6 +75,11 @@ BRK_HOOKS = [
     ("cb_ready",    0x100F43274, 0x101468078, "00a04039"),  # 就绪位 getter（LDRB W0,[X0,#0xA];RET）
     ("cb_verify",   0x100F43FFC, 0x101468080, "fc6fbaa9"),  # 全树校验入口（STP X28,X27,[SP,#-0x60]!）
     ("cb_dispatch", 0x10013C5E8, 0x101468088, "ff0304d1"),  # 更新错码分发入口（SUB SP,#0x100）
+    # ---- 解锁条件"内部计数"判定（功能账 §1.2）----
+    ("judge107", 0x100AB300C, 0x101468090, "080840b9"),  # SpellMagnolia 判定（LDR W8,[X0,#8]）
+    ("judge110", 0x100184064, 0x101468098, "080c40b9"),  # ArghenaCourse 判定（LDR W8,[X0,#0xC]）
+    ("judge112", 0x100184084, 0x1014680A0, "080c40b9"),  # AlterEgoPuzzle 判定
+    ("judge108", 0x100183FDC, 0x1014680A8, "f44fbea9"),  # ArghenaStories 判定（STP X20,X19,[SP,#-0x20]!）
 ]
 # 重放跳板必须避免 PC 相关指令（ADRP/ADR/B/BL/CBZ/TBZ/LDR-literal）——
 # 跳板在别处执行，PC 相对寻址会算错。这里只做"显然安全"的粗筛并提示。

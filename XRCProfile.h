@@ -204,6 +204,19 @@
 #define XRC_BRK_CB_DISPATCH_SITE_OFF (0x13C5E8ULL)  // 更新错码分发入口（SUB SP,SP,#0x100）
 #define XRC_BRK_CB_DISPATCH_REPLAY_OFF (0x1468088ULL)
 
+// ---------------- BRK 桩：解锁条件"内部计数"判定（功能账 §1.2，2026-09-14 定位）----------------
+// 出处: 子代理定位（vtable 槽1 反推；判定函数→data xref→vtable）。
+// 这四类条件的判定不读 un（内部计数器/故事节点），un 派发生效不了——是"硬编码门"本体。
+// 统一挂 unlock_all 开关：置真 → 判定恒真（w0=1 直返）。
+#define XRC_BRK_JUDGE107_SITE_OFF    (0xAB300CULL)  // SpellMagnolia: *(int*)(x0+8) > 7（0x10）
+#define XRC_BRK_JUDGE107_REPLAY_OFF  (0x1468090ULL)
+#define XRC_BRK_JUDGE110_SITE_OFF    (0x184064ULL)  // ArghenaCourse: *(int*)(x0+0xC) > 199999（0x18）
+#define XRC_BRK_JUDGE110_REPLAY_OFF  (0x1468098ULL)
+#define XRC_BRK_JUDGE112_SITE_OFF    (0x184084ULL)  // AlterEgoPuzzle: >998 || (Game+192)==4（0x34）
+#define XRC_BRK_JUDGE112_REPLAY_OFF  (0x14680A0ULL)
+#define XRC_BRK_JUDGE108_SITE_OFF    (0x183FDCULL)  // ArghenaStories: 节点(15,6)&&(16,6) 激活（0x74）
+#define XRC_BRK_JUDGE108_REPLAY_OFF  (0x14680A8ULL)
+
 // ---------------- OnlineManager 探针 / applog 强发（XRCOMLog）----------------
 // 出处: 2026-09-12 真机内存转储（incoming/xrcdemo-net-new/mem, 276MB, 972 区域）
 //       + 静态复核（IDA 8745）。

@@ -275,6 +275,10 @@ static const xrc_brk_entry_t k_brk_entries[] = {
     { "cb_ready",    XRC_BRK_CB_READY_SITE_OFF,   XRC_BRK_CB_READY_REPLAY_OFF,   s_cb_ready_true },
     { "cb_verify",   XRC_BRK_CB_VERIFY_SITE_OFF,  XRC_BRK_CB_VERIFY_REPLAY_OFF,  s_cb_skip_void },
     { "cb_dispatch", XRC_BRK_CB_DISPATCH_SITE_OFF, XRC_BRK_CB_DISPATCH_REPLAY_OFF, s_cb_skip_void },
+    { "judge107",    XRC_BRK_JUDGE107_SITE_OFF,   XRC_BRK_JUDGE107_REPLAY_OFF,   s_unlock_force_true },
+    { "judge110",    XRC_BRK_JUDGE110_SITE_OFF,   XRC_BRK_JUDGE110_REPLAY_OFF,   s_unlock_force_true },
+    { "judge112",    XRC_BRK_JUDGE112_SITE_OFF,   XRC_BRK_JUDGE112_REPLAY_OFF,   s_unlock_force_true },
+    { "judge108",    XRC_BRK_JUDGE108_SITE_OFF,   XRC_BRK_JUDGE108_REPLAY_OFF,   s_unlock_force_true },
 };
 
 void xrc_brk_setup(uint64_t image_base) {
