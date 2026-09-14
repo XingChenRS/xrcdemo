@@ -18,6 +18,7 @@
 #include "XRCProfile.h"
 #include "XRCDump.h"
 #include "XRCNet.h"
+#include "XRCHook.h"
 
 // ---------------- 时间轴视图（PracticeTimeline 同构） ----------------
 @interface XRCTimelineView : UIView
@@ -346,6 +347,22 @@
     [self addSubview:netField];
     y += rowH + gap;
 
+    // ---- 拥有/解锁链 + cb 验证链开关（功能账 §1/§3）----
+    // 直连 BRK 桩 handler（xrc_brk_set_*），即时生效；plist 键 unlockAll/cbBypass 启动时同源。
+    UIButton *unlockBtn = [self makeButton:@"解锁 关" action:@selector(toggleUnlockAll)];
+    unlockBtn.frame = CGRectMake(x0, y, (W - 8) / 2, rowH);
+    unlockBtn.tag = 4210;
+    unlockBtn.titleLabel.font = [UIFont systemFontOfSize:11];
+    [unlockBtn setTitleColor:[UIColor systemPinkColor] forState:UIControlStateNormal];
+    [self addSubview:unlockBtn];
+    UIButton *cbBtn = [self makeButton:@"cb校验 关" action:@selector(toggleCbBypass)];
+    cbBtn.frame = CGRectMake(x0 + (W - 8) / 2 + 8, y, (W - 8) / 2, rowH);
+    cbBtn.tag = 4211;
+    cbBtn.titleLabel.font = [UIFont systemFontOfSize:11];
+    [cbBtn setTitleColor:[UIColor systemPinkColor] forState:UIControlStateNormal];
+    [self addSubview:cbBtn];
+    y += rowH + gap;
+
     // ---- tips（拖拽=跳转；循环 = 设起点→设终点→开循环；到终点自动重建回起点）----
     UILabel *tips = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
     tips.text = @"拖时间轴=跳转 ｜ 循环: 设起点→设终点→开循环(到终点回到起点; Retry 后也回到起点)";
@@ -466,6 +483,28 @@
     [self refresh];
 }
 
+// 拥有/解锁链开关（功能账 §1）：拥有链三层 + 故事门 + 内部计数条件判定 全部恒真
+- (void)toggleUnlockAll {
+    xrc_config_t c; xrc_config_load(&c);
+    c.unlock_all = !c.unlock_all;
+    xrc_config_save(&c);
+    xrc_brk_set_unlock_all(c.unlock_all);
+    [WHToast showMessage:c.unlock_all ? @"解锁全开（拥有链+故事门+条件判定 恒真）"
+                                      : @"解锁恢复原判定" duration:1.4 finishHandler:^{}];
+    [self refresh];
+}
+
+// cb 验证链开关（功能账 §3）：就绪恒真 + 全树校验/更新错码分发 跳过
+- (void)toggleCbBypass {
+    xrc_config_t c; xrc_config_load(&c);
+    c.cb_bypass = !c.cb_bypass;
+    xrc_config_save(&c);
+    xrc_brk_set_cb_bypass(c.cb_bypass);
+    [WHToast showMessage:c.cb_bypass ? @"cb 校验已跳过（改谱面/cb 自由化）"
+                                     : @"cb 校验恢复" duration:1.4 finishHandler:^{}];
+    [self refresh];
+}
+
 // 保存地址（不自动开启；开关单独控制）
 - (void)commitNet {
     UITextField *f = (UITextField *)[self viewWithTag:4201];
@@ -541,6 +580,26 @@
         nb.backgroundColor = on ? [UIColor colorWithRed:0.1 green:0.5 blue:0.5 alpha:1.0]
                                 : [UIColor colorWithWhite:0.25 alpha:1.0];
         [nb setTitleColor:on ? [UIColor whiteColor] : [UIColor systemTealColor]
+                 forState:UIControlStateNormal];
+    }
+
+    // 解锁 / cb 开关状态（读运行时开关原子——策略热载翻的也会反映在这里）
+    UIButton *ub = (UIButton *)[self viewWithTag:4210];
+    if (ub) {
+        BOOL on = xrc_brk_unlock_all();
+        [ub setTitle:(on ? @"解锁 开" : @"解锁 关") forState:UIControlStateNormal];
+        ub.backgroundColor = on ? [UIColor colorWithRed:0.6 green:0.1 blue:0.3 alpha:1.0]
+                                : [UIColor colorWithWhite:0.25 alpha:1.0];
+        [ub setTitleColor:on ? [UIColor whiteColor] : [UIColor systemPinkColor]
+                 forState:UIControlStateNormal];
+    }
+    UIButton *cbb = (UIButton *)[self viewWithTag:4211];
+    if (cbb) {
+        BOOL on = xrc_brk_cb_bypass();
+        [cbb setTitle:(on ? @"cb校验 开" : @"cb校验 关") forState:UIControlStateNormal];
+        cbb.backgroundColor = on ? [UIColor colorWithRed:0.6 green:0.1 blue:0.3 alpha:1.0]
+                                 : [UIColor colorWithWhite:0.25 alpha:1.0];
+        [cbb setTitleColor:on ? [UIColor whiteColor] : [UIColor systemPinkColor]
                  forState:UIControlStateNormal];
     }
     [self applyCapabilityGating];
