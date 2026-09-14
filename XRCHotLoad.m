@@ -153,6 +153,8 @@ bool xrc_hotload_run(void) {
     s_host.brk_blob_seq     = xrc_brk_blob_seq;
     s_host.brk_blob_take    = xrc_brk_blob_take;
     s_host.brk_blob_sp      = xrc_brk_blob_sp;
+    s_host.brk_set_unlock_all = xrc_brk_set_unlock_all;
+    s_host.brk_set_cb_bypass  = xrc_brk_set_cb_bypass;
 
     int rc = -1;
     @try {

@@ -12,7 +12,8 @@
 #include <stdbool.h>
 
 #define XRC_PLUGIN_ABI_V1 1u
-#define XRC_PLUGIN_ABI_NOW XRC_PLUGIN_ABI_V1
+#define XRC_PLUGIN_ABI_V2 2u   // v2：尾部追加功能开关（unlock_all / cb_bypass）
+#define XRC_PLUGIN_ABI_NOW XRC_PLUGIN_ABI_V2
 
 typedef struct xrc_host {
     uint32_t abi;                  // = XRC_PLUGIN_ABI_NOW（内层必须校验）
@@ -42,6 +43,10 @@ typedef struct xrc_host {
     uint32_t (*brk_blob_seq)(void);
     size_t   (*brk_blob_take)(void *buf, size_t cap);
     uint64_t (*brk_blob_sp)(void);
+
+    // 功能开关（v2 追加；见功能账 §1/§3。内层：host->abi >= 2 才可用）
+    void     (*brk_set_unlock_all)(bool on);   // 拥有/解锁链四桩强制真
+    void     (*brk_set_cb_bypass)(bool on);    // cb 就绪恒真 + 校验/错码分发跳过
 } xrc_host_t;
 
 // 内层必须导出的唯一入口。整个调用包在 @try/@catch + 信号兜底里。

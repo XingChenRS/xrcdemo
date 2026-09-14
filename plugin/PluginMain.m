@@ -469,28 +469,34 @@ int xrc_plugin_main(const xrc_host_t *host) {
     }
 
     // 拥有/解锁链开关（功能账 §1）：策略驱动。热载重触发即生效（无需重启 app）。
-    // 目标函数在外层（libxrcdemo 的 XRCHook），经 RTLD_DEFAULT 动态解析。
+    // 优先走宿主 ABI v2 字段；旧外层回退 dlsym。
     v = 0;
     if (pol && pol_get_num(pol, "unlock_all", &v)) {
-        void (*set_unlock)(bool) =
-            (void (*)(bool))dlsym(RTLD_DEFAULT, "xrc_brk_set_unlock_all");
+        void (*set_unlock)(bool) = NULL;
+        if (host->abi >= XRC_PLUGIN_ABI_V2 && host->brk_set_unlock_all)
+            set_unlock = host->brk_set_unlock_all;
+        if (!set_unlock)
+            set_unlock = (void (*)(bool))dlsym(RTLD_DEFAULT, "xrc_brk_set_unlock_all");
         if (set_unlock) {
             set_unlock(v == 1);
             host->log("→ unlock_all = %lld", v);
         } else {
-            host->log("→ unlock_all: 外层未导出 xrc_brk_set_unlock_all（需重新注入新外层）");
+            host->log("→ unlock_all: 外层无此能力（需重新注入新外层）");
         }
     }
     // cb 验证链开关（功能账 §3）：同上，策略驱动
     v = 0;
     if (pol && pol_get_num(pol, "cb_bypass", &v)) {
-        void (*set_cb)(bool) =
-            (void (*)(bool))dlsym(RTLD_DEFAULT, "xrc_brk_set_cb_bypass");
+        void (*set_cb)(bool) = NULL;
+        if (host->abi >= XRC_PLUGIN_ABI_V2 && host->brk_set_cb_bypass)
+            set_cb = host->brk_set_cb_bypass;
+        if (!set_cb)
+            set_cb = (void (*)(bool))dlsym(RTLD_DEFAULT, "xrc_brk_set_cb_bypass");
         if (set_cb) {
             set_cb(v == 1);
             host->log("→ cb_bypass = %lld", v);
         } else {
-            host->log("→ cb_bypass: 外层未导出 xrc_brk_set_cb_bypass（需重新注入新外层）");
+            host->log("→ cb_bypass: 外层无此能力（需重新注入新外层）");
         }
     }
     // 观察：四桩命中统计（unlock_l1/l2/l3/story_gate 是否在跑）
