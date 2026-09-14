@@ -22,6 +22,7 @@
 #include <string.h>
 #include <mach/mach_time.h>
 #include <mach/arm/thread_status.h>
+#include <mach-o/dyld.h>
 
 #include "XRCHook.h"
 #include "XRCProfile.h"
@@ -42,6 +43,8 @@ static xrc_brk_slot_t s_slots[XRC_BRK_MAX_SLOTS];
 static _Atomic(int)   s_count = 0;
 static struct sigaction s_prev;
 static bool s_installed = false;
+// 主程序基址（install 时经 dyld 取）——分发器兜底路径用（PC 相关，不能现算）
+static _Atomic(uint64_t) s_main_base = 0;
 // mach_timebase 在安装时算好，处理器内不做非安全调用
 static uint64_t s_tb_num = 1, s_tb_den = 1;
 
@@ -180,6 +183,32 @@ static void s_cb_skip_void(void *vctx) {
         (void *)__darwin_arm_thread_state64_get_lr(*ss));
 }
 
+// 桩表（site/replay/handler 同源 XRCProfile.h；加桩 = 这里加一行 + inject.py 同步）。
+// 放在分发器之前：分发器用它做"未注册兜底"（早期命中时注册可能还没跑，见
+// xrc_brk_setup_early —— 2026-09-15 cb_verify 时序崩溃的修复）。
+typedef struct {
+    const char *name;
+    uint64_t    site_off;
+    uint64_t    replay_off;
+    void      (*handler)(void *);
+} xrc_brk_entry_t;
+
+static const xrc_brk_entry_t k_brk_entries[] = {
+    { "applog_send", XRC_BRK_APPLOG_SITE_OFF,     XRC_BRK_APPLOG_REPLAY_OFF,     s_applog_capture },
+    { "applog_blob", XRC_BRK_APPLOG_BLOB_SITE_OFF, XRC_BRK_APPLOG_BLOB_REPLAY_OFF, s_applog_blob_capture },
+    { "unlock_l1",   XRC_BRK_UNLOCK_L1_SITE_OFF,  XRC_BRK_UNLOCK_L1_REPLAY_OFF,  s_unlock_force_true },
+    { "unlock_l2",   XRC_BRK_UNLOCK_L2_SITE_OFF,  XRC_BRK_UNLOCK_L2_REPLAY_OFF,  s_unlock_force_true },
+    { "unlock_l3",   XRC_BRK_UNLOCK_L3_SITE_OFF,  XRC_BRK_UNLOCK_L3_REPLAY_OFF,  s_unlock_force_true },
+    { "story_gate",  XRC_BRK_STORY_SITE_OFF,      XRC_BRK_STORY_REPLAY_OFF,      s_unlock_force_true },
+    { "cb_ready",    XRC_BRK_CB_READY_SITE_OFF,   XRC_BRK_CB_READY_REPLAY_OFF,   s_cb_ready_true },
+    { "cb_verify",   XRC_BRK_CB_VERIFY_SITE_OFF,  XRC_BRK_CB_VERIFY_REPLAY_OFF,  s_cb_skip_void },
+    { "cb_dispatch", XRC_BRK_CB_DISPATCH_SITE_OFF, XRC_BRK_CB_DISPATCH_REPLAY_OFF, s_cb_skip_void },
+    { "judge107",    XRC_BRK_JUDGE107_SITE_OFF,   XRC_BRK_JUDGE107_REPLAY_OFF,   s_unlock_force_true },
+    { "judge110",    XRC_BRK_JUDGE110_SITE_OFF,   XRC_BRK_JUDGE110_REPLAY_OFF,   s_unlock_force_true },
+    { "judge112",    XRC_BRK_JUDGE112_SITE_OFF,   XRC_BRK_JUDGE112_REPLAY_OFF,   s_unlock_force_true },
+    { "judge108",    XRC_BRK_JUDGE108_SITE_OFF,   XRC_BRK_JUDGE108_REPLAY_OFF,   s_unlock_force_true },
+};
+
 static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
     ucontext_t *uc = (ucontext_t *)vctx;
     if (uc && uc->uc_mcontext) {
@@ -200,6 +229,18 @@ static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
                     __darwin_arm_thread_state64_set_pc_fptr(*ss, (void *)rp);
                 }
                 return;
+            }
+        }
+        // 兜底：注册表没匹配上，但 PC 命中已知桩表（早期命中，注册尚未跑）——
+        // 走该桩的重放跳板（原行为）。绝不把自家的 BRK 链给默认处理器。
+        uint64_t mb = atomic_load(&s_main_base);
+        if (mb) {
+            for (size_t k = 0; k < sizeof(k_brk_entries) / sizeof(k_brk_entries[0]); k++) {
+                if (pc == mb + k_brk_entries[k].site_off) {
+                    __darwin_arm_thread_state64_set_pc_fptr(*ss,
+                        (void *)(mb + k_brk_entries[k].replay_off));
+                    return;
+                }
             }
         }
     }
@@ -232,8 +273,10 @@ void xrc_brk_install(void) {
         xrc_log(@"[brk] sigaction(SIGTRAP) FAILED");
         return;
     }
+    atomic_store(&s_main_base, (uint64_t)_dyld_get_image_header(0));
     s_installed = true;
-    xrc_log(@"[brk] SIGTRAP handler installed (prev=%p)", (void *)s_prev.sa_sigaction);
+    xrc_log(@"[brk] SIGTRAP handler installed (prev=%p, main=%p)",
+            (void *)s_prev.sa_sigaction, (void *)_dyld_get_image_header(0));
 }
 
 bool xrc_brk_register(uint64_t site_va, uint64_t replay_va, void (*handler)(void *)) {
@@ -256,30 +299,6 @@ bool xrc_brk_register(uint64_t site_va, uint64_t replay_va, void (*handler)(void
     atomic_store(&s_count, n + 1);
     return true;
 }
-
-// 桩表（site/replay/handler 同源 XRCProfile.h；加桩 = 这里加一行 + inject.py 同步）
-typedef struct {
-    const char *name;
-    uint64_t    site_off;
-    uint64_t    replay_off;
-    void      (*handler)(void *);
-} xrc_brk_entry_t;
-
-static const xrc_brk_entry_t k_brk_entries[] = {
-    { "applog_send", XRC_BRK_APPLOG_SITE_OFF,     XRC_BRK_APPLOG_REPLAY_OFF,     s_applog_capture },
-    { "applog_blob", XRC_BRK_APPLOG_BLOB_SITE_OFF, XRC_BRK_APPLOG_BLOB_REPLAY_OFF, s_applog_blob_capture },
-    { "unlock_l1",   XRC_BRK_UNLOCK_L1_SITE_OFF,  XRC_BRK_UNLOCK_L1_REPLAY_OFF,  s_unlock_force_true },
-    { "unlock_l2",   XRC_BRK_UNLOCK_L2_SITE_OFF,  XRC_BRK_UNLOCK_L2_REPLAY_OFF,  s_unlock_force_true },
-    { "unlock_l3",   XRC_BRK_UNLOCK_L3_SITE_OFF,  XRC_BRK_UNLOCK_L3_REPLAY_OFF,  s_unlock_force_true },
-    { "story_gate",  XRC_BRK_STORY_SITE_OFF,      XRC_BRK_STORY_REPLAY_OFF,      s_unlock_force_true },
-    { "cb_ready",    XRC_BRK_CB_READY_SITE_OFF,   XRC_BRK_CB_READY_REPLAY_OFF,   s_cb_ready_true },
-    { "cb_verify",   XRC_BRK_CB_VERIFY_SITE_OFF,  XRC_BRK_CB_VERIFY_REPLAY_OFF,  s_cb_skip_void },
-    { "cb_dispatch", XRC_BRK_CB_DISPATCH_SITE_OFF, XRC_BRK_CB_DISPATCH_REPLAY_OFF, s_cb_skip_void },
-    { "judge107",    XRC_BRK_JUDGE107_SITE_OFF,   XRC_BRK_JUDGE107_REPLAY_OFF,   s_unlock_force_true },
-    { "judge110",    XRC_BRK_JUDGE110_SITE_OFF,   XRC_BRK_JUDGE110_REPLAY_OFF,   s_unlock_force_true },
-    { "judge112",    XRC_BRK_JUDGE112_SITE_OFF,   XRC_BRK_JUDGE112_REPLAY_OFF,   s_unlock_force_true },
-    { "judge108",    XRC_BRK_JUDGE108_SITE_OFF,   XRC_BRK_JUDGE108_REPLAY_OFF,   s_unlock_force_true },
-};
 
 void xrc_brk_setup(uint64_t image_base) {
     xrc_brk_install();
@@ -304,6 +323,16 @@ void xrc_brk_setup(uint64_t image_base) {
                 e->name, ok, (void *)site, insn, patched, (void *)replay);
     }
     xrc_brk_capture_enable(true);
+}
+
+void xrc_brk_setup_early(void) {
+    // 在 %ctor 里调用：安装处理器 + 立即注册全部桩点。
+    // 2026-09-15 时序教训：cb 校验在 didFinishLaunching 前 ~0.5s 就有后台线程命中，
+    // 当时注册还挂在 didFinishLaunching（doBootstrap），分发器空表 → 链给默认处理器
+    // → EXC_BREAKPOINT 秒崩。注册与处理器安装必须同刻。
+    xrc_brk_install();   // 幂等
+    uint64_t mb = atomic_load(&s_main_base);
+    if (mb) xrc_brk_setup(mb);
 }
 
 uint32_t xrc_brk_hits(int slot_index) {

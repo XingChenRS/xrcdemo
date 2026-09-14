@@ -22,6 +22,10 @@ bool xrc_brk_register(uint64_t site_va, uint64_t replay_va,
 // 按本版本 profile 装配全部桩点（安装处理器 + 注册）。
 void xrc_brk_setup(uint64_t image_base);
 
+// 早期装配：在 %ctor 里调用（安装处理器 + 立即注册，主程序基址经 dyld 自取）。
+// 注册与处理器安装必须同刻——启动极早期就命中的桩（如 cb 校验）等不到 didFinishLaunching。
+void xrc_brk_setup_early(void);
+
 // ---- 拥有/解锁链开关（功能账 §1）----
 // 置真后 unlock_l1/l2/l3 + story_gate 四桩的 handler 强制 `x0=1; PC=LR` 直返；
 // 置假恢复原行为（重放跳板）。async-signal-safe：处理器只做原子读。

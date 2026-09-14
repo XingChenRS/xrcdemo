@@ -389,8 +389,10 @@ static void onAppLaunched(CFNotificationCenterRef center, void *observer,
                        g_cfg.judge_far_ms + g_cfg.judge_lost_ms) / 270.0f;
         xrc_judge_set_scale(scale);
     } @catch (NSException *e) {}
-    // BRK 桩处理器尽早装（注入时已写死 BRK，越早接住越安全）；注册在 doBootstrap。
-    @try { xrc_brk_install(); } @catch (NSException *e) { xrc_log(@"brk install EX: %@", e); }
+    // BRK 桩：处理器安装 + **立即注册**（2026-09-15 时序教训：cb 校验在 didFinishLaunching
+    // 之前就有后台线程命中；注册晚于命中 = 空表分发 → 秒崩）。doBootstrap 里的 setup
+    // 保留为幂等刷新（同 site 重复注册只换 handler）。
+    @try { xrc_brk_setup_early(); } @catch (NSException *e) { xrc_log(@"brk early EX: %@", e); }
     CFNotificationCenterAddObserver(CFNotificationCenterGetLocalCenter(), NULL,
         onAppLaunched,
         (CFStringRef)UIApplicationDidFinishLaunchingNotification,
