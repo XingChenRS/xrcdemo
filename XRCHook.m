@@ -187,6 +187,65 @@ static void s_cb_skip_void(void *vctx) {
         (void *)__darwin_arm_thread_state64_get_lr(*ss));
 }
 
+// ---------------- 登录门守卫开关（功能账 §1.4；no-replay 变体，2026-09-18）----------------
+// 14 个站点均为 CBZ/TBZ（PC 相对指令）→ **不可重放**；处理器按 W0 自判分支走向：
+// 命中时 W0 = 紧邻的 BL checkA/checkB 返回值（14/14 逐站点核实）。永不使用 replay 槽。
+//   login_open 真（默认）→ 永远落穿 = 弹窗路径不可达（解锁/领奖/联机动作照常发起）
+//   login_open 假         → 查 k_login_meta 复刻原分支语义（A/B 对照调试用）
+static _Atomic(bool) s_login_open = true;
+
+void xrc_brk_set_login_open(bool on) { atomic_store(&s_login_open, on); }
+bool xrc_brk_login_open(void)        { return atomic_load(&s_login_open); }
+
+// kind: 0 = CBZ（W0==0 时跳向弹窗）/ 1 = TBZ W0,#0（bit0==0 时跳向弹窗）
+typedef struct {
+    uint64_t site_off;
+    uint64_t target_off;
+    uint8_t  kind;
+} xrc_login_meta_t;
+
+static const xrc_login_meta_t k_login_meta[] = {
+    { XRC_BRK_LOGIN_MEM_A_SITE_OFF,       0x112F8CULL, 0 },
+    { XRC_BRK_LOGIN_MEM_B_SITE_OFF,       0x112F8CULL, 1 },
+    { XRC_BRK_LOGIN_MISSION1_A_SITE_OFF,  0xA8EB68ULL, 0 },
+    { XRC_BRK_LOGIN_MISSION1_B_SITE_OFF,  0xA8EB68ULL, 1 },
+    { XRC_BRK_LOGIN_MISSION2_A_SITE_OFF,  0xA90D48ULL, 0 },
+    { XRC_BRK_LOGIN_MISSION2_B_SITE_OFF,  0xA90D48ULL, 1 },
+    { XRC_BRK_LOGIN_MISSION3_A_SITE_OFF,  0xA9143CULL, 0 },
+    { XRC_BRK_LOGIN_MISSION3_B_SITE_OFF,  0xA9143CULL, 1 },
+    { XRC_BRK_LOGIN_LINKPLAY1_A_SITE_OFF, 0xCBB624ULL, 0 },
+    { XRC_BRK_LOGIN_LINKPLAY1_B_SITE_OFF, 0xCBB624ULL, 0 },
+    { XRC_BRK_LOGIN_LINKPLAY2_A_SITE_OFF, 0xCBBC64ULL, 0 },
+    { XRC_BRK_LOGIN_LINKPLAY2_B_SITE_OFF, 0xCBBC64ULL, 0 },
+    { XRC_BRK_LOGIN_LINKPLAY3_A_SITE_OFF, 0xCBCDA8ULL, 0 },
+    { XRC_BRK_LOGIN_LINKPLAY3_B_SITE_OFF, 0xCBCDA8ULL, 0 },
+};
+
+static void s_login_guard(void *vctx) {
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    uint64_t pc = (uint64_t)__darwin_arm_thread_state64_get_pc(*ss);
+    uint64_t mb = atomic_load(&s_main_base);
+    if (!mb) return;
+    if (atomic_load(&s_login_open)) {
+        __darwin_arm_thread_state64_set_pc_fptr(*ss, (void *)(pc + 4));
+        return;
+    }
+    uint64_t site_off = pc - mb;
+    for (size_t i = 0; i < sizeof(k_login_meta) / sizeof(k_login_meta[0]); i++) {
+        if (k_login_meta[i].site_off == site_off) {
+            uint32_t w0 = (uint32_t)ss->__x[0];
+            bool take = k_login_meta[i].kind ? ((w0 & 1u) == 0u) : (w0 == 0u);
+            __darwin_arm_thread_state64_set_pc_fptr(*ss,
+                (void *)(take ? mb + k_login_meta[i].target_off : pc + 4));
+            return;
+        }
+    }
+    // 未匹配（异常路径）：安全落穿
+    __darwin_arm_thread_state64_set_pc_fptr(*ss, (void *)(pc + 4));
+}
+
 // 桩表（site/replay/handler 同源 XRCProfile.h；加桩 = 这里加一行 + inject.py 同步）。
 // 放在分发器之前：分发器用它做"未注册兜底"（早期命中时注册可能还没跑，见
 // xrc_brk_setup_early —— 2026-09-15 cb_verify 时序崩溃的修复）。
@@ -211,6 +270,21 @@ static const xrc_brk_entry_t k_brk_entries[] = {
     { "judge110",    XRC_BRK_JUDGE110_SITE_OFF,   XRC_BRK_JUDGE110_REPLAY_OFF,   s_unlock_force_true },
     { "judge112",    XRC_BRK_JUDGE112_SITE_OFF,   XRC_BRK_JUDGE112_REPLAY_OFF,   s_unlock_force_true },
     { "judge108",    XRC_BRK_JUDGE108_SITE_OFF,   XRC_BRK_JUDGE108_REPLAY_OFF,   s_unlock_force_true },
+    // ---- 登录门守卫（no-replay 变体：replay_off = 0，处理器自判分支；功能账 §1.4，2026-09-18）----
+    { "login_mem_a",      XRC_BRK_LOGIN_MEM_A_SITE_OFF,      0, s_login_guard },
+    { "login_mem_b",      XRC_BRK_LOGIN_MEM_B_SITE_OFF,      0, s_login_guard },
+    { "login_mission1_a", XRC_BRK_LOGIN_MISSION1_A_SITE_OFF, 0, s_login_guard },
+    { "login_mission1_b", XRC_BRK_LOGIN_MISSION1_B_SITE_OFF, 0, s_login_guard },
+    { "login_mission2_a", XRC_BRK_LOGIN_MISSION2_A_SITE_OFF, 0, s_login_guard },
+    { "login_mission2_b", XRC_BRK_LOGIN_MISSION2_B_SITE_OFF, 0, s_login_guard },
+    { "login_mission3_a", XRC_BRK_LOGIN_MISSION3_A_SITE_OFF, 0, s_login_guard },
+    { "login_mission3_b", XRC_BRK_LOGIN_MISSION3_B_SITE_OFF, 0, s_login_guard },
+    { "login_linkplay1_a", XRC_BRK_LOGIN_LINKPLAY1_A_SITE_OFF, 0, s_login_guard },
+    { "login_linkplay1_b", XRC_BRK_LOGIN_LINKPLAY1_B_SITE_OFF, 0, s_login_guard },
+    { "login_linkplay2_a", XRC_BRK_LOGIN_LINKPLAY2_A_SITE_OFF, 0, s_login_guard },
+    { "login_linkplay2_b", XRC_BRK_LOGIN_LINKPLAY2_B_SITE_OFF, 0, s_login_guard },
+    { "login_linkplay3_a", XRC_BRK_LOGIN_LINKPLAY3_A_SITE_OFF, 0, s_login_guard },
+    { "login_linkplay3_b", XRC_BRK_LOGIN_LINKPLAY3_B_SITE_OFF, 0, s_login_guard },
 };
 
 static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
@@ -230,7 +304,9 @@ static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
                 uint64_t pc1 = (uint64_t)__darwin_arm_thread_state64_get_pc(*ss);
                 if (pc1 == pc) {
                     uint64_t rp = atomic_load(&s_slots[i].replay);
-                    __darwin_arm_thread_state64_set_pc_fptr(*ss, (void *)rp);
+                    // no-replay 桩（rp=0）：安全落穿（跳过该条件分支）
+                    __darwin_arm_thread_state64_set_pc_fptr(*ss,
+                        (void *)(rp ? rp : pc + 4));
                 }
                 return;
             }
@@ -241,8 +317,10 @@ static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
         if (mb) {
             for (size_t k = 0; k < sizeof(k_brk_entries) / sizeof(k_brk_entries[0]); k++) {
                 if (pc == mb + k_brk_entries[k].site_off) {
+                    uint64_t ro = k_brk_entries[k].replay_off;
+                    // no-replay 桩（ro=0）：安全落穿
                     __darwin_arm_thread_state64_set_pc_fptr(*ss,
-                        (void *)(mb + k_brk_entries[k].replay_off));
+                        (void *)(ro ? mb + ro : pc + 4));
                     return;
                 }
             }
@@ -284,7 +362,7 @@ void xrc_brk_install(void) {
 }
 
 bool xrc_brk_register(uint64_t site_va, uint64_t replay_va, void (*handler)(void *)) {
-    if (!site_va || !replay_va) return false;
+    if (!site_va) return false;   // replay_va = 0 合法（no-replay 桩：处理器自设 PC）
     int n = atomic_load(&s_count);
     // 同 site 重复注册 = 换 handler（热载插件用它替换正式版 handler 调试）
     for (int i = 0; i < n; i++) {
@@ -310,7 +388,7 @@ void xrc_brk_setup(uint64_t image_base) {
     for (size_t i = 0; i < sizeof(k_brk_entries) / sizeof(k_brk_entries[0]); i++) {
         const xrc_brk_entry_t *e = &k_brk_entries[i];
         uint64_t site   = image_base + e->site_off;
-        uint64_t replay = image_base + e->replay_off;
+        uint64_t replay = e->replay_off ? image_base + e->replay_off : 0;   // 0 = no-replay 桩
         // 注入校验：site 处必须是 BRK #0，否则说明二进制没打桩 / 版本不符
         uint32_t insn = *(volatile uint32_t *)site;
         bool patched = (insn == 0xD4200000u);
@@ -326,6 +404,10 @@ void xrc_brk_setup(uint64_t image_base) {
         xrc_log(@"[brk] %s slot reg=%d site=%p(insn=%08X patched=%d) replay=%p",
                 e->name, ok, (void *)site, insn, patched, (void *)replay);
     }
+    // 标记串（inject.py 用它在 dylib 里核对"登录门 no-replay 桩支持"是否在场；
+    // 旧 dylib + 新桩表混用会在守卫首命中时链默认处理器 → 崩，注入脚本据此拒配）。
+    xrc_log(@"[brk] login-guard v1 ready (login_open=%d, slots=%d)",
+            (int)atomic_load(&s_login_open), atomic_load(&s_count));
     xrc_brk_capture_enable(true);
 }
 

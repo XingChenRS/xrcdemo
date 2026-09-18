@@ -21,6 +21,8 @@ typedef struct {
     BOOL      unlock_all;   // 开：拥有链三层 + 故事门强制返回真（可控内容门）
     // ---- cb 验证链开关（功能账 §3）----
     BOOL      cb_bypass;    // 开：cb 就绪恒真 + 全树校验/更新错码分发跳过
+    // ---- 登录门守卫开关（功能账 §1.4）----
+    BOOL      login_open;   // 开（默认）：解锁/领奖/联机不再要求"在线登录"（BRK 桩落穿）
 } xrc_config_t;
 
 NSString *xrc_config_path(void);

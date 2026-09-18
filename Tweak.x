@@ -206,6 +206,9 @@ static void doBootstrap(void) {
         // cb 验证链开关（功能账 §3）：默认关；打开后就绪恒真+校验/错码分发跳过
         @try { xrc_brk_set_cb_bypass(g_cfg.cb_bypass); }
         @catch (NSException *e) { xrc_log(@"cb flag EX: %@", e); }
+        // 登录门守卫开关（功能账 §1.4）：默认开；开=解锁/领奖/联机不再弹"必须在线登录"
+        @try { xrc_brk_set_login_open(g_cfg.login_open); }
+        @catch (NSException *e) { xrc_log(@"login flag EX: %@", e); }
         // 私服重定向：NSURLConnection 层改写 URL（不改 TLS；换域后 pin 自然放行）
         @try {
             xrc_net_install();

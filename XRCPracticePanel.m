@@ -363,6 +363,16 @@
     [self addSubview:cbBtn];
     y += rowH + gap;
 
+    // ---- 登录门守卫开关（功能账 §1.4）----
+    // BRK no-replay 桩的运行时开关：开=解锁/领奖/联机不再弹"必须在线登录"。
+    UIButton *loginBtn = [self makeButton:@"登录门 开" action:@selector(toggleLoginOpen)];
+    loginBtn.frame = CGRectMake(x0, y, W, rowH);
+    loginBtn.tag = 4212;
+    loginBtn.titleLabel.font = [UIFont systemFontOfSize:11];
+    [loginBtn setTitleColor:[UIColor systemPinkColor] forState:UIControlStateNormal];
+    [self addSubview:loginBtn];
+    y += rowH + gap;
+
     // ---- tips（拖拽=跳转；循环 = 设起点→设终点→开循环；到终点自动重建回起点）----
     UILabel *tips = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
     tips.text = @"拖时间轴=跳转 ｜ 循环: 设起点→设终点→开循环(到终点回到起点; Retry 后也回到起点)";
@@ -505,6 +515,17 @@
     [self refresh];
 }
 
+// 登录门守卫开关（功能账 §1.4）：开=解锁/领奖/联机不弹"必须在线登录"；关=复刻原行为
+- (void)toggleLoginOpen {
+    xrc_config_t c; xrc_config_load(&c);
+    c.login_open = !c.login_open;
+    xrc_config_save(&c);
+    xrc_brk_set_login_open(c.login_open);
+    [WHToast showMessage:c.login_open ? @"登录门已放开（解锁/领奖/联机不再拦截）"
+                                      : @"登录门恢复原判定" duration:1.4 finishHandler:^{}];
+    [self refresh];
+}
+
 // 保存地址（不自动开启；开关单独控制）
 - (void)commitNet {
     UITextField *f = (UITextField *)[self viewWithTag:4201];
@@ -600,6 +621,16 @@
         cbb.backgroundColor = on ? [UIColor colorWithRed:0.6 green:0.1 blue:0.3 alpha:1.0]
                                  : [UIColor colorWithWhite:0.25 alpha:1.0];
         [cbb setTitleColor:on ? [UIColor whiteColor] : [UIColor systemPinkColor]
+                 forState:UIControlStateNormal];
+    }
+    UIButton *lgb = (UIButton *)[self viewWithTag:4212];
+    if (lgb) {
+        BOOL on = xrc_brk_login_open();
+        [lgb setTitle:(on ? @"登录门 开（解锁/领奖/联机免登录拦截）" : @"登录门 关（原判定）")
+             forState:UIControlStateNormal];
+        lgb.backgroundColor = on ? [UIColor colorWithRed:0.6 green:0.1 blue:0.3 alpha:1.0]
+                                 : [UIColor colorWithWhite:0.25 alpha:1.0];
+        [lgb setTitleColor:on ? [UIColor whiteColor] : [UIColor systemPinkColor]
                  forState:UIControlStateNormal];
     }
     [self applyCapabilityGating];

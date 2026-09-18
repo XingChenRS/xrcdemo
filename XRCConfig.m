@@ -55,6 +55,8 @@ static void s_ensure_defaults(NSMutableDictionary *p) {
     if (!p[@"unlockAll"])  p[@"unlockAll"]  = @NO;
     // cb 验证链开关：默认关闭（开 = 改谱面/cb 自由化）
     if (!p[@"cbBypass"])   p[@"cbBypass"]   = @NO;
+    // 登录门守卫开关：默认开启（内容动作不再被"必须在线登录"拦住；关=复刻原行为）
+    if (!p[@"loginOpen"])  p[@"loginOpen"]  = @YES;
 }
 
 NSMutableDictionary *xrc_config_dict(void) {
@@ -115,6 +117,7 @@ void xrc_config_load(xrc_config_t *out) {
     out->net_match      = [prefs[@"netMatch"] length] ? prefs[@"netMatch"] : nil;
     out->unlock_all     = [prefs[@"unlockAll"] boolValue];
     out->cb_bypass      = [prefs[@"cbBypass"] boolValue];
+    out->login_open     = [prefs[@"loginOpen"] boolValue];
 }
 
 void xrc_config_save(const xrc_config_t *c) {
@@ -132,5 +135,6 @@ void xrc_config_save(const xrc_config_t *c) {
     p[@"netMatch"]      = c->net_match ?: @"";
     p[@"unlockAll"]     = @(c->unlock_all);
     p[@"cbBypass"]      = @(c->cb_bypass);
+    p[@"loginOpen"]     = @(c->login_open);
     xrc_config_write_dict(p);
 }

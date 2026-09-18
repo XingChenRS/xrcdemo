@@ -217,6 +217,27 @@
 #define XRC_BRK_JUDGE108_SITE_OFF    (0x183FDCULL)  // ArghenaStories: 节点(15,6)&&(16,6) 激活（0x74）
 #define XRC_BRK_JUDGE108_REPLAY_OFF  (0x14680A8ULL)
 
+// ---------------- BRK 桩：登录门守卫（no-replay 变体；功能账 §1.4，2026-09-18 定位）----------------
+// 14 个守卫站点 = 7 个动作入口 × 2 条分支（记忆源点解锁×1 / 任务奖励×3 / Link Play×3）。
+// 分支本体是 CBZ/TBZ（PC 相对指令）→ **不能走重放跳板**（换址执行会算错目标）。
+// 处理器 s_login_guard 自判：破点命中时 W0 = 紧邻的 BL checkA(0x88F3C8)/checkB(0x88F3E8) 返回值
+// （逐站点核实 15/15 都判 W0）。login_open 真 → 永不走弹窗（落穿真实动作）；假 → 复刻原分支语义。
+// 开关：xrc_brk_set_login_open（plist loginOpen / 策略 login_open；默认真）。replay 槽位不用（=0）。
+#define XRC_BRK_LOGIN_MEM_A_SITE_OFF      (0x112F4CULL) // 记忆源点 A（CBZ W0；目标 0x112F8C）
+#define XRC_BRK_LOGIN_MEM_B_SITE_OFF      (0x112F58ULL) // 记忆源点 B（TBZ W0,#0）
+#define XRC_BRK_LOGIN_MISSION1_A_SITE_OFF (0xA8EAE8ULL) // 任务奖励① A（CBZ W0；目标 0xA8EB68）
+#define XRC_BRK_LOGIN_MISSION1_B_SITE_OFF (0xA8EAF4ULL) // 任务奖励① B（TBZ W0,#0）
+#define XRC_BRK_LOGIN_MISSION2_A_SITE_OFF (0xA90CC8ULL) // 任务奖励② A（CBZ W0；目标 0xA90D48）
+#define XRC_BRK_LOGIN_MISSION2_B_SITE_OFF (0xA90CD4ULL) // 任务奖励② B（TBZ W0,#0）
+#define XRC_BRK_LOGIN_MISSION3_A_SITE_OFF (0xA913BCULL) // 任务奖励③ A（CBZ W0；目标 0xA9143C）
+#define XRC_BRK_LOGIN_MISSION3_B_SITE_OFF (0xA913C8ULL) // 任务奖励③ B（TBZ W0,#0）
+#define XRC_BRK_LOGIN_LINKPLAY1_A_SITE_OFF (0xCBB5ECULL)// Link Play① A（CBZ W0；目标 0xCBB624）
+#define XRC_BRK_LOGIN_LINKPLAY1_B_SITE_OFF (0xCBB5F8ULL)// Link Play① B（CBZ W0）
+#define XRC_BRK_LOGIN_LINKPLAY2_A_SITE_OFF (0xCBBC18ULL)// Link Play② A（CBZ W0；目标 0xCBBC64）
+#define XRC_BRK_LOGIN_LINKPLAY2_B_SITE_OFF (0xCBBC24ULL)// Link Play② B（CBZ W0）
+#define XRC_BRK_LOGIN_LINKPLAY3_A_SITE_OFF (0xCBCD70ULL)// Link Play③ A（CBZ W0；目标 0xCBCDA8）
+#define XRC_BRK_LOGIN_LINKPLAY3_B_SITE_OFF (0xCBCD7CULL)// Link Play③ B（CBZ W0）
+
 // ---------------- OnlineManager 探针 / applog 强发（XRCOMLog）----------------
 // 出处: 2026-09-12 真机内存转储（incoming/xrcdemo-net-new/mem, 276MB, 972 区域）
 //       + 静态复核（IDA 8745）。

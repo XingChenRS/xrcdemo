@@ -80,34 +80,32 @@ BRK_HOOKS = [
     ("judge110", 0x100184064, 0x101468098, "080c40b9"),  # ArghenaCourse 判定（LDR W8,[X0,#0xC]）
     ("judge112", 0x100184084, 0x1014680A0, "080c40b9"),  # AlterEgoPuzzle 判定
     ("judge108", 0x100183FDC, 0x1014680A8, "f44fbea9"),  # ArghenaStories 判定（STP X20,X19,[SP,#-0x20]!）
+    # ---- 登录门守卫（no-replay 变体：分支为 PC 相对指令，处理器自设 PC；功能账 §1.4）----
+    # replay_va = None：不建重放跳板；expect = 原 CBZ/TBZ 指令字节；
+    # 需 dylib 带 "login-guard v1" 支持（main() 做配对校验）。
+    ("login_mem_a",       0x100112F4C, None, "00020034"),  # 记忆源点解锁 A（CBZ W0）
+    ("login_mem_b",       0x100112F58, None, "a0010036"),  # 记忆源点解锁 B（TBZ W0,#0）
+    ("login_mission1_a",  0x100A8EAE8, None, "00040034"),  # 任务奖励① A
+    ("login_mission1_b",  0x100A8EAF4, None, "a0030036"),  # 任务奖励① B
+    ("login_mission2_a",  0x100A90CC8, None, "00040034"),  # 任务奖励② A
+    ("login_mission2_b",  0x100A90CD4, None, "a0030036"),  # 任务奖励② B
+    ("login_mission3_a",  0x100A913BC, None, "00040034"),  # 任务奖励③ A
+    ("login_mission3_b",  0x100A913C8, None, "a0030036"),  # 任务奖励③ B
+    ("login_linkplay1_a", 0x100CBB5EC, None, "c0010034"),  # Link Play① A
+    ("login_linkplay1_b", 0x100CBB5F8, None, "60010034"),  # Link Play① B
+    ("login_linkplay2_a", 0x100CBBC18, None, "60020034"),  # Link Play② A
+    ("login_linkplay2_b", 0x100CBBC24, None, "00020034"),  # Link Play② B
+    ("login_linkplay3_a", 0x100CBCD70, None, "c0010034"),  # Link Play③ A
+    ("login_linkplay3_b", 0x100CBCD7C, None, "60010034"),  # Link Play③ B
 ]
 
 # ---- 门禁静态补丁（形态 0；7.0.255 重定位 2026-09-18，注入即生效，可 --no-gates 关闭）----
-#  A. "必须在线登录"守卫分支 NOP（7 个成员 ×2 分支）——守卫形态：
-#       BL checkA(0x10088F3C8); CBZ W0,<弹窗>; [LDR]; BL checkB(0x10088F3E8); TBZ/CBZ W0,<弹窗>
-#     NOP 掉两条分支后落穿到真实动作分支（解锁/领奖/联机请求照常发起）。
-#     成员：① 记忆源点解锁 ②③④ 任务奖励领取（三入口）⑤⑥⑦ Link Play（三入口）。
 #  B. 离线 BYD 门（sub_10084D708 谱面路径判定）：CMP W20,#3 → #0x2F（imm12 单字段翻转，
 #     与 6.13 已验方案同款）→ BYD 谱面改走标准 songs/<dir>/N.aff 路径，不再走下载式命名。
+#     注：登录门守卫原本也在本表（14 处静态 NOP），2026-09-18 晚已改为 BRK no-replay 桩
+#     （见上方 BRK_HOOKS）——运行时可开关、逻辑在 dylib 层。
 # (名称, VA, 原字节 hex, 补丁字节 hex) —— 幂等：已是补丁字节跳过；expect 不符即报错。
 GATE_PATCHES = [
-    # ① sub_100112EC4 记忆源点解锁（"Memories are used to unlock…online and signed in"）
-    ("login_memories_a",  0x100112F4C, "00020034", "1f2003d5"),
-    ("login_memories_b",  0x100112F58, "a0010036", "1f2003d5"),
-    # ②③④ sub_100A8EA74 / sub_100A90C50 / sub_100A91348 任务奖励领取（三入口）
-    ("login_mission_1a",  0x100A8EAE8, "00040034", "1f2003d5"),
-    ("login_mission_1b",  0x100A8EAF4, "a0030036", "1f2003d5"),
-    ("login_mission_2a",  0x100A90CC8, "00040034", "1f2003d5"),
-    ("login_mission_2b",  0x100A90CD4, "a0030036", "1f2003d5"),
-    ("login_mission_3a",  0x100A913BC, "00040034", "1f2003d5"),
-    ("login_mission_3b",  0x100A913C8, "a0030036", "1f2003d5"),
-    # ⑤⑥⑦ sub_100CBB5B0 / sub_100CBBBD8 / sub_100CBCCA4 Link Play（三入口）
-    ("login_linkplay_1a", 0x100CBB5EC, "c0010034", "1f2003d5"),
-    ("login_linkplay_1b", 0x100CBB5F8, "60010034", "1f2003d5"),
-    ("login_linkplay_2a", 0x100CBBC18, "60020034", "1f2003d5"),
-    ("login_linkplay_2b", 0x100CBBC24, "00020034", "1f2003d5"),
-    ("login_linkplay_3a", 0x100CBCD70, "c0010034", "1f2003d5"),
-    ("login_linkplay_3b", 0x100CBCD7C, "60010034", "1f2003d5"),
     # 离线 BYD 门（6.13 0x1007D1FD5 的 7.0 对应）
     ("byd_offline_gate",  0x10084D778, "9f0e0071", "9fbe0071"),
 ]
@@ -262,7 +260,6 @@ def patch_brk_hooks(data: bytearray) -> list[str]:
     base = fat_arm64_slice_offset(bytes(data))
     for name, site_va, replay_va, expect in BRK_HOOKS:
         site_file = base + (site_va - 0x100000000)
-        replay_file = base + (replay_va - 0x100000000)
         orig = bytes(data[site_file:site_file + 4])
         if len(orig) != 4:
             raise RuntimeError(f"brk[{name}]: site {site_va:#x} out of range")
@@ -274,6 +271,20 @@ def patch_brk_hooks(data: bytearray) -> list[str]:
                 f"brk[{name}]: site {site_va:#x} bytes {orig.hex()} != expected "
                 f"{expect} — wrong binary version?"
             )
+        if replay_va is None:
+            # no-replay 桩：处理器自设 PC，无需跳板。仅接受条件分支（CBZ/CBNZ/TBZ/TBNZ）。
+            top = orig[3]
+            if top not in (0x34, 0x35, 0xB4, 0xB5, 0x36, 0x37, 0xB6, 0xB7):
+                raise RuntimeError(
+                    f"brk[{name}]: no-replay site {site_va:#x} insn {orig.hex()} "
+                    f"is not a conditional branch"
+                )
+            data[site_file:site_file + 4] = BRK_INSN
+            logs.append(
+                f"brk[{name}]: {site_va:#x} -> BRK#0 (orig {orig.hex()}, no-replay)"
+            )
+            continue
+        replay_file = base + (replay_va - 0x100000000)
         w = struct.unpack("<I", orig)[0]
         kind = pc_relative_kind(w)
         if kind:
@@ -522,12 +533,16 @@ def check_binary(path: str) -> int:
     print(f"slot       : {slot if slot else '-'}")
     for name, site_va, replay_va, _expect in BRK_HOOKS:
         sf = base + (site_va - 0x100000000)
-        rf = base + (replay_va - 0x100000000)
         insn = struct.unpack_from("<I", raw, sf)[0]
-        tramp_b = raw[rf:rf + 8]
-        print(f"brk[{name}]: site {insn:#010x} "
-              f"{'PATCHED' if insn == 0xD4200000 else 'original'}; "
-              f"replay {tramp_b.hex() if any(tramp_b) else 'empty'}")
+        if replay_va:
+            rf = base + (replay_va - 0x100000000)
+            tramp_b = raw[rf:rf + 8]
+            print(f"brk[{name}]: site {insn:#010x} "
+                  f"{'PATCHED' if insn == 0xD4200000 else 'original'}; "
+                  f"replay {tramp_b.hex() if any(tramp_b) else 'empty'}")
+        else:
+            print(f"brk[{name}]: site {insn:#010x} "
+                  f"{'PATCHED' if insn == 0xD4200000 else 'original'}; no-replay")
     print(f"dylib LC   : {'@rpath/libxrcdemo.dylib present' if has_dylib else 'MISSING'}")
     gate_ok = 0
     for name, va, expect, patch in GATE_PATCHES:
@@ -595,6 +610,16 @@ def main():
     except FileNotFoundError as e:
         print(f"[!] {e}")
         sys.exit(1)
+
+    # 配对校验：桩表含 no-replay 登录门桩 → dylib 必须带对应支持（标记串在场）。
+    # 旧 dylib + 新桩表混用：守卫首命中 → 兜底循环找不到匹配（旧表无此站点）→
+    # 链默认处理器 → EXC_BREAKPOINT。宁可此处拒配。
+    if any(r is None for _n, _s, r, _e in BRK_HOOKS):
+        marker = b"login-guard v1"
+        if not any(marker in open(d, "rb").read() for d in dylibs):
+            print("[!] dylibs lack 'login-guard v1' support (need 2026-09-18+ build) —")
+            print("    login-gate no-replay stubs would crash the app on first guard hit.")
+            sys.exit(3)
 
     os.makedirs(FW_DIR, exist_ok=True)
     for d in dylibs:

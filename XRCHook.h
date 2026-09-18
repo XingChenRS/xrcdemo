@@ -37,6 +37,10 @@ bool xrc_brk_unlock_all(void);
 void xrc_brk_set_cb_bypass(bool on);
 bool xrc_brk_cb_bypass(void);
 
+// 登录门守卫开关（功能账 §1.4；no-replay 桩，处理器自判分支）
+void xrc_brk_set_login_open(bool on);
+bool xrc_brk_login_open(void);
+
 // 统计（异步写入，主线程读；供定时器落日志）
 uint32_t    xrc_brk_hits(int slot_index);
 int         xrc_brk_slot_count(void);

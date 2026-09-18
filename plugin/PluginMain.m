@@ -499,6 +499,18 @@ int xrc_plugin_main(const xrc_host_t *host) {
             host->log("→ cb_bypass: 外层无此能力（需重新注入新外层）");
         }
     }
+    // 登录门守卫开关（功能账 §1.4）：策略驱动；只走 dlsym（host ABI 表暂未扩列）
+    v = 0;
+    if (pol && pol_get_num(pol, "login_open", &v)) {
+        void (*set_lg)(bool) =
+            (void (*)(bool))dlsym(RTLD_DEFAULT, "xrc_brk_set_login_open");
+        if (set_lg) {
+            set_lg(v == 1);
+            host->log("→ login_open = %lld", v);
+        } else {
+            host->log("→ login_open: 外层无此符号（需重新注入新外层）");
+        }
+    }
     // 观察：四桩命中统计（unlock_l1/l2/l3/story_gate 是否在跑）
     v = 0;
     if (pol && pol_get_num(pol, "unlock_stats", &v) && v == 1) {
