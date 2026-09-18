@@ -124,16 +124,7 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
     //   · judge_time 用 note+0x18：判定落在"精确命中"时刻（门必过、视觉时序正确）
     //   · input_time = -1 = 合成输入哨兵（eve 与 Android kInputTimeSynth 逐值一致）
     if (atomic_load(&s_autoplay)) {
-        uint64_t stats = rd64(ng + XRC_OFF_JUDGE_COMMIT_OBJ);
-        uint64_t fx    = rd64(ng + XRC_OFF_JUDGE_FX_OBJ);
-        if (s_commit && stats)
-            s_commit(stats, note, 0 /*Pure*/, 0 /*dir*/,
-                     (uint64_t)(uint32_t)note_ms /*judge_time*/, 0xFFFFFFFFULL /*input=-1*/);
-        if (fx) {
-            uint64_t f1 = rd64(rd64(fx) + 8);
-            if (f1) ((xrc_fx1_t)f1)(fx, note, 0, (uint64_t)(uint32_t)dir);
-        }
-        atomic_fetch_add(&s_stat_pure, 1);
+        xrc_judge_autoplay_pure(ng, note, note_ms);
         return 1;
     }
 
@@ -195,12 +186,37 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
     return 0;
 }
 
+// 强制 Pure 落账 + 特效——自动演奏的统一出口（2026-09-18 抽出，供 autoplay 站点处理器复用）。
+// 配方出处（eve 实件交叉验证）：
+//   commit(stats, note, grade=0, dir=0, judge_time, input_time=-1)
+//   · judge_time：调用方给定（判定核路径 = 音符自身时间；窗口站点 = 音符窗口时刻）
+//   · input_time = -1 = 合成输入哨兵（eve 与 Android kInputTimeSynth 逐值一致）
+void xrc_judge_autoplay_pure(uint64_t ng, uint64_t note, int32_t judge_time) {
+    uint64_t stats = rd64(ng + XRC_OFF_JUDGE_COMMIT_OBJ);
+    uint64_t fx    = rd64(ng + XRC_OFF_JUDGE_FX_OBJ);
+    if (s_commit && stats)
+        s_commit(stats, note, 0 /*Pure*/, 0 /*dir*/,
+                 (uint64_t)(uint32_t)judge_time, 0xFFFFFFFFULL /*input=-1*/);
+    if (fx) {
+        uint64_t f1 = rd64(rd64(fx) + 8);   // vtable[1](fx, note, grade, dir)
+        if (f1) ((xrc_fx1_t)f1)(fx, note, 0, 0);
+    }
+    atomic_fetch_add(&s_stat_pure, 1);
+}
+
 void xrc_judge_log_stats(void) {
     xrc_log(@"[judge] calls=%u pure=%u far=%u lost=%u ln=%u miss=%u gated=%u",
              atomic_load(&s_call_total), atomic_load(&s_stat_pure),
              atomic_load(&s_stat_far), atomic_load(&s_stat_lost),
              atomic_load(&s_stat_ln), atomic_load(&s_stat_miss),
              atomic_load(&s_stat_gated));
+}
+#endif
+
+#if !XRC_HAS_JUDGE_STUB
+// 未启用判定桩时提供空实现，保证 XRCHook.m 的 autoplay 站点处理器可链接。
+void xrc_judge_autoplay_pure(uint64_t ng, uint64_t note, int32_t judge_time) {
+    (void)ng; (void)note; (void)judge_time;
 }
 #endif
 

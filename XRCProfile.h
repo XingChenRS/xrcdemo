@@ -238,6 +238,46 @@
 #define XRC_BRK_LOGIN_LINKPLAY3_A_SITE_OFF (0xCBCD70ULL)// Link Play③ A（CBZ W0；目标 0xCBCDA8）
 #define XRC_BRK_LOGIN_LINKPLAY3_B_SITE_OFF (0xCBCD7CULL)// Link Play③ B（CBZ W0）
 
+// ---------------- BRK 桩：自动演奏（eve 全量对齐；功能账 §5.2，2026-09-18 定位）----------------
+// 出处: eve 实件（Downloads/arceve_x，其二进制为 BRK 就地打桩 + handler 反编译转储）
+//   → 宿主双胞胎逐指令序列对齐（.idamcp/_align_host.txt：eve 0x100871E00 (0x5E4)
+//   ↔ 7.0 sub_10091D9A0 (0x5E4)，258 条指令逐条配对；其余站点按入口序言/字节模板唯一命中）。
+// 机制要点（与 eve 行为等价，实现按 7.0 布局重写）：
+//   · 长条（hold/arc）：把 note+0x64（longTouchState 首字节）= 1 → 原版判定 pass 走"被触"
+//     分支，由**游戏自己的 tick 循环**发 Pure（commit(0,0,now,-1) + fx[1]，7.0 原生代码）——
+//     我们只改一个字节，落账/计数/视觉全走原版（与 6.x 的 +0x5C 同字段，7.0 漂移 +8）。
+//   · 窗口点强判：谱面时刻到达 note+0x1C 即直调 commit(Pure, judge_time=note+0x1C) + fx[1]，
+//     随后跳回原版汇合点（0x91DD44 / 0x91DF5C）——视觉时序 = 音符自身时刻。
+//   · 触摸吞掉：三个输入入口（逐触消费/批处理/触摸批）恒返回 0（x0=0; PC=LR），
+//     玩家真实触摸不干扰（eve 三触控入口同款）。
+//   · 弧线视觉：场景 tick 的清态点重新置"被触"（eve on_arc_visual_clear 同款）。
+// 开关：xrc_judge_set_autoplay（既有）。关 → 每站重放原指令，行为与未注入完全一致。
+#define XRC_BRK_AP_LN_STATE_SITE_OFF     (0x91DBC8ULL) // LDRB W8,[X0,#0x64]（长条触摸态读取点，eve on_long_state：0x100872028）
+#define XRC_BRK_AP_LN_TICK_SITE_OFF      (0x91DC48ULL) // LDR X8,[X27]（长条判定派发前 vtable 装载，eve on_long_tick：0x1008720A8）
+#define XRC_BRK_AP_NOTE_WIN_SITE_OFF     (0x91DD70ULL) // CMP W2,W8（W8=note+0x1C+0xC8，eve on_note_window：0x1008721D0）
+#define XRC_BRK_AP_ARCTAP_WIN_SITE_OFF   (0x91DF34ULL) // CMP W2,W8（W8=note+0x1C+0x64，eve on_arctap_window：0x100872394）
+#define XRC_BRK_AP_SWALLOW_JUDGE_SITE_OFF (0x91EBC8ULL) // sub_10091EBC8 入口（逐触消费；SUB SP,#0x170，eve on_touch_handler：0x100872F70）
+#define XRC_BRK_AP_SWALLOW_BATCH_SITE_OFF (0x91F688ULL) // sub_10091F688 入口（输入批处理+漏扫；SUB SP,#0xA0，eve on_touch_phase：0x100873A04）
+#define XRC_BRK_AP_SWALLOW_TOUCH_SITE_OFF (0x921DC4ULL) // sub_100921DC4 入口（触摸批→消费 mode0；SUB SP,#0x80，eve on_touch_batch：0x100875AB8）
+#define XRC_BRK_AP_ARC_VISUAL_SITE_OFF   (0x91CC84ULL) // STRH WZR,[X0,#0x10]（场景 tick 弧清态，eve on_arc_visual_clear：0x1008710B0）
+#define XRC_BRK_AP_LN_STATE_REPLAY_OFF     (0x14680B0ULL)
+#define XRC_BRK_AP_LN_TICK_REPLAY_OFF      (0x14680B8ULL)
+#define XRC_BRK_AP_NOTE_WIN_REPLAY_OFF     (0x14680C0ULL)
+#define XRC_BRK_AP_ARCTAP_WIN_REPLAY_OFF   (0x14680C8ULL)
+#define XRC_BRK_AP_SWALLOW_JUDGE_REPLAY_OFF (0x14680D0ULL)
+#define XRC_BRK_AP_SWALLOW_BATCH_REPLAY_OFF (0x14680D8ULL)
+#define XRC_BRK_AP_SWALLOW_TOUCH_REPLAY_OFF (0x14680E0ULL)
+#define XRC_BRK_AP_ARC_VISUAL_REPLAY_OFF   (0x14680E8ULL)
+// 自动演奏站点处理器引用的 7.0 布局常量（出处同上：D9A0/CBB0 反汇编 + vtable 符号表）。
+#define XRC_NOTE_TIME_END_OFF       28            // note+0x1C = 窗口时刻（判定 pass 两处 CMP 的依据；
+                                                  // 注：旧记录"note+28=判定类型"来自别的对象，已修正）
+#define XRC_NOTE_ACTIVE_OFF         84            // note+0x54 = active 字节（与 Android/6.x 同偏移）
+#define XRC_NOTE_LNSTATE_OFF        100           // note+0x64 = longTouchState 首字节（6.x 0x5C 漂移 +8）
+#define XRC_LN_VPTR_ARC             0x149C020ULL  // _ZTV12LogicArcNote + 16（对象 vptr）
+#define XRC_LN_VPTR_HOLD            0x14B7980ULL  // _ZTV13LogicHoldNote + 16
+#define XRC_AP_NOTE_WIN_CONT_OFF    (0x91DD44ULL) // 窗口强判后的原版汇合点（W19=0;W26=1 → 弧态更新+子扫描）
+#define XRC_AP_ARCTAP_WIN_CONT_OFF  (0x91DF5CULL) // 子音符循环续点（ADD X26,X26,#8）
+
 // ---------------- OnlineManager 探针 / applog 强发（XRCOMLog）----------------
 // 出处: 2026-09-12 真机内存转储（incoming/xrcdemo-net-new/mem, 276MB, 972 区域）
 //       + 静态复核（IDA 8745）。

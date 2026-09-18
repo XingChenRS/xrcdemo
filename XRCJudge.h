@@ -28,3 +28,9 @@ bool xrc_judge_is_active(void);
 // 依据：漏扫（sub_10091F688 内，note时间+120ms 触发、ts=-1）同样流经本 handler。
 void xrc_judge_set_autoplay(bool on);
 bool xrc_judge_autoplay(void);
+
+// 强制 Pure 落账 + 特效（供 XRCHook.m 的 autoplay 站点处理器复用；2026-09-18）。
+// 参数：ng = note group（stats/特效对象宿主）；note = 目标音符；judge_time = 判定时刻 ms。
+// 内部：commit(stats, note, 0, 0, judge_time, input=-1) + fx[1](fx, note, 0, 0)。
+// 语义/配方出处：eve 实件 on_miss（功能账 §5/§5.2）。
+void xrc_judge_autoplay_pure(uint64_t ng, uint64_t note, int32_t judge_time);

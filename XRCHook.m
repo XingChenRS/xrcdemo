@@ -26,6 +26,7 @@
 
 #include "XRCHook.h"
 #include "XRCProfile.h"
+#include "XRCJudge.h"   // autoplay 站点处理器复用 xrc_judge_autoplay/_pure
 #import "XRCLog.h"
 
 #if XRC_HAS_BRK_HOOK
@@ -246,6 +247,97 @@ static void s_login_guard(void *vctx) {
     __darwin_arm_thread_state64_set_pc_fptr(*ss, (void *)(pc + 4));
 }
 
+// ---------------- 自动演奏站点处理器（eve 全量对齐；功能账 §5.2，2026-09-18）----------------
+// 全部受 xrc_judge_autoplay() 开关：关 → 处理器直接返回（不改 PC）→ 分发器送回重放跳板，
+// 行为与未注入完全一致。命中时寄存器即现场（ucontext），按站点约定读 X20/X27/X28/X2 等。
+// 站点语义与 eve 实件的逐条对照见 XRCProfile.h 的出处注释。
+static inline uint64_t s_ap_ld64(uint64_t a) { return *(volatile uint64_t *)a; }
+static inline uint32_t s_ap_ld32(uint64_t a) { return *(volatile uint32_t *)a; }
+static inline uint8_t  s_ap_ld8 (uint64_t a) { return *(volatile uint8_t  *)a; }
+static inline bool     s_ap_ptr_ok(uint64_t p) { return p >= 0x100000000ULL && (p & 7u) == 0; }
+
+// 长条"被触"态：note+0x64/+0x65 = 1（= eve mark_long_note_touched 在 6.x 写 +0x5C 的同款两字节；
+// 7.0 判定 pass 的 "CMP W8,#1" 门读的就是 +0x64）。只认 弧/长条 vtable + active，避免误伤。
+static void s_ap_mark_ln(uint64_t note) {
+    uint64_t mb = atomic_load(&s_main_base);
+    if (!mb || !s_ap_ptr_ok(note)) return;
+    uint64_t vt = s_ap_ld64(note);
+    if (vt != mb + XRC_LN_VPTR_ARC && vt != mb + XRC_LN_VPTR_HOLD) return;
+    if (s_ap_ld8(note + XRC_NOTE_ACTIVE_OFF) != 1) return;
+    *(volatile uint8_t *)(note + XRC_NOTE_LNSTATE_OFF) = 1;
+    *(volatile uint8_t *)(note + XRC_NOTE_LNSTATE_OFF + 1) = 1;
+}
+
+// 长条触摸态读取点（命中时 X0 = 长条 note）：标记后不改 PC → 重放原 LDRB → 原版走"被触"分支。
+static void s_ap_ln_state(void *vctx) {
+    if (!xrc_judge_autoplay()) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    s_ap_mark_ln(uc->uc_mcontext->__ss.__x[0]);
+}
+
+// 长条判定派发前的 vtable 装载点（命中时 X27 = 长条 note）：同上（兜底标记）。
+static void s_ap_ln_tick(void *vctx) {
+    if (!xrc_judge_autoplay()) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    s_ap_mark_ln(uc->uc_mcontext->__ss.__x[27]);
+}
+
+// 窗口点强判（note_win / arctap_win 共用）：note = 音符寄存器、ng = X20、now = X2。
+// 谱面时刻 >= note+0x1C（窗口时刻）→ 直调 commit(Pure, judge_time=窗口时刻) + fx[1]，
+// PC 跳至原版汇合点；未到窗口 → 不改 PC → 重放原 CMP（NZCV 由真实执行产生，分支语义不变）。
+static void s_ap_window(void *vctx, int note_reg, uint64_t cont_off) {
+    if (!xrc_judge_autoplay()) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    uint64_t note = ss->__x[note_reg];
+    uint64_t ng   = ss->__x[20];
+    int32_t  now  = (int32_t)ss->__x[2];
+    uint64_t mb   = atomic_load(&s_main_base);
+    if (!mb || !s_ap_ptr_ok(note) || !s_ap_ptr_ok(ng) || now < 0) return;
+    if (s_ap_ld8(note + XRC_NOTE_ACTIVE_OFF) != 1) return;   // active（eve 同款守卫）
+    int32_t t_end = (int32_t)s_ap_ld32(note + XRC_NOTE_TIME_END_OFF);
+    if (t_end > now) return;   // 窗口未到：原版比较继续（重放）
+    xrc_judge_autoplay_pure(ng, note, t_end);
+    __darwin_arm_thread_state64_set_pc_fptr(*ss, (void *)(mb + cont_off));
+}
+
+static void s_ap_note_win(void *vctx)   { s_ap_window(vctx, 28, XRC_AP_NOTE_WIN_CONT_OFF); }
+static void s_ap_arctap_win(void *vctx) { s_ap_window(vctx, 27, XRC_AP_ARCTAP_WIN_CONT_OFF); }
+
+// 触摸吞掉（三个输入入口共用）：x0 = 0 并直接按 LR 返回（函数体不执行 = 触摸不进游戏逻辑）。
+static void s_ap_swallow(void *vctx) {
+    if (!xrc_judge_autoplay()) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    ss->__x[0] = 0;
+    __darwin_arm_thread_state64_set_pc_fptr(*ss, (void *)__darwin_arm_thread_state64_get_lr(*ss));
+}
+
+// 弧线视觉（场景 tick 清态点；命中时 X0 = 弧子对象 = sub_100187618(note)、X22 = note）：
+// 代执行原版两条清态（STRH/STRB）后重写"被触"值，PC 直接 +8（跳过原版 STRB）。
+static void s_ap_arc_visual(void *vctx) {
+    if (!xrc_judge_autoplay()) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    uint64_t mb = atomic_load(&s_main_base);
+    if (!mb) return;
+    uint64_t child = ss->__x[0];
+    if (s_ap_ptr_ok(child)) {
+        *(volatile uint16_t *)(child + 0x10) = 0;      // 原版 STRH WZR,[X0,#0x10]
+        *(volatile uint8_t  *)(child + 0x12) = 0;      // 原版 STRB WZR,[X0,#0x12]
+        *(volatile uint16_t *)(child + 0x10) = 0x0101; // 重写"被触"（eve on_arc_visual_clear 同款）
+        *(volatile uint8_t  *)(child + 0x12) = 1;
+    }
+    s_ap_mark_ln(ss->__x[22]);
+    __darwin_arm_thread_state64_set_pc_fptr(*ss,
+        (void *)(mb + XRC_BRK_AP_ARC_VISUAL_SITE_OFF + 8));
+}
+
 // 桩表（site/replay/handler 同源 XRCProfile.h；加桩 = 这里加一行 + inject.py 同步）。
 // 放在分发器之前：分发器用它做"未注册兜底"（早期命中时注册可能还没跑，见
 // xrc_brk_setup_early —— 2026-09-15 cb_verify 时序崩溃的修复）。
@@ -285,6 +377,15 @@ static const xrc_brk_entry_t k_brk_entries[] = {
     { "login_linkplay2_b", XRC_BRK_LOGIN_LINKPLAY2_B_SITE_OFF, 0, s_login_guard },
     { "login_linkplay3_a", XRC_BRK_LOGIN_LINKPLAY3_A_SITE_OFF, 0, s_login_guard },
     { "login_linkplay3_b", XRC_BRK_LOGIN_LINKPLAY3_B_SITE_OFF, 0, s_login_guard },
+    // ---- 自动演奏（eve 全量对齐；功能账 §5.2，2026-09-18 定位）----
+    { "ap_ln_state",      XRC_BRK_AP_LN_STATE_SITE_OFF,     XRC_BRK_AP_LN_STATE_REPLAY_OFF,     s_ap_ln_state },
+    { "ap_ln_tick",       XRC_BRK_AP_LN_TICK_SITE_OFF,      XRC_BRK_AP_LN_TICK_REPLAY_OFF,      s_ap_ln_tick },
+    { "ap_note_win",      XRC_BRK_AP_NOTE_WIN_SITE_OFF,     XRC_BRK_AP_NOTE_WIN_REPLAY_OFF,     s_ap_note_win },
+    { "ap_arctap_win",    XRC_BRK_AP_ARCTAP_WIN_SITE_OFF,   XRC_BRK_AP_ARCTAP_WIN_REPLAY_OFF,   s_ap_arctap_win },
+    { "ap_swallow_judge", XRC_BRK_AP_SWALLOW_JUDGE_SITE_OFF, XRC_BRK_AP_SWALLOW_JUDGE_REPLAY_OFF, s_ap_swallow },
+    { "ap_swallow_batch", XRC_BRK_AP_SWALLOW_BATCH_SITE_OFF, XRC_BRK_AP_SWALLOW_BATCH_REPLAY_OFF, s_ap_swallow },
+    { "ap_swallow_touch", XRC_BRK_AP_SWALLOW_TOUCH_SITE_OFF, XRC_BRK_AP_SWALLOW_TOUCH_REPLAY_OFF, s_ap_swallow },
+    { "ap_arc_visual",    XRC_BRK_AP_ARC_VISUAL_SITE_OFF,   XRC_BRK_AP_ARC_VISUAL_REPLAY_OFF,   s_ap_arc_visual },
 };
 
 static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
@@ -408,6 +509,8 @@ void xrc_brk_setup(uint64_t image_base) {
     // 旧 dylib + 新桩表混用会在守卫首命中时链默认处理器 → 崩，注入脚本据此拒配）。
     xrc_log(@"[brk] login-guard v1 ready (login_open=%d, slots=%d)",
             (int)atomic_load(&s_login_open), atomic_load(&s_count));
+    // 同款配对标记：自动演奏站点（ap_*）由本 dylib 处理；旧 dylib 无此表 → 注入脚本拒配。
+    xrc_log(@"[brk] autoplay-eve v1 ready (autoplay=%d)", (int)xrc_judge_autoplay());
     xrc_brk_capture_enable(true);
 }
 

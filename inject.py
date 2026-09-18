@@ -97,6 +97,18 @@ BRK_HOOKS = [
     ("login_linkplay2_b", 0x100CBBC24, None, "00020034"),  # Link Play② B
     ("login_linkplay3_a", 0x100CBCD70, None, "c0010034"),  # Link Play③ A
     ("login_linkplay3_b", 0x100CBCD7C, None, "60010034"),  # Link Play③ B
+    # ---- 自动演奏（eve 全量对齐；功能账 §5.2，2026-09-18 定位）----
+    # 站点语义/handler 见 XRCProfile.h + XRCHook.m；开关 xrc_judge_set_autoplay（默认关）。
+    # 关时各站重放原指令，行为与未注入一致；开启后长条走原版 Pure tick、窗口点强判、
+    # 三输入入口吞触摸。需 dylib 带 "autoplay-eve v1"（main() 配对校验）。
+    ("ap_ln_state",      0x10091DBC8, 0x1014680B0, "08904139"),  # LDRB W8,[X0,#0x64]（长条触摸态读取点）
+    ("ap_ln_tick",       0x10091DC48, 0x1014680B8, "680340f9"),  # LDR X8,[X27]（长条判定派发前 vtable 装载）
+    ("ap_note_win",      0x10091DD70, 0x1014680C0, "5f00086b"),  # CMP W2,W8（窗口 = note+0x1C+0xC8）
+    ("ap_arctap_win",    0x10091DF34, 0x1014680C8, "5f00086b"),  # CMP W2,W8（窗口 = note+0x1C+0x64，弧子音符）
+    ("ap_swallow_judge", 0x10091EBC8, 0x1014680D0, "ffc305d1"),  # SUB SP,#0x170（逐触消费 sub_10091EBC8 入口）
+    ("ap_swallow_batch", 0x10091F688, 0x1014680D8, "ff8302d1"),  # SUB SP,#0xA0（输入批处理 sub_10091F688 入口）
+    ("ap_swallow_touch", 0x100921DC4, 0x1014680E0, "ff0302d1"),  # SUB SP,#0x80（触摸批 sub_100921DC4 入口）
+    ("ap_arc_visual",    0x10091CC84, 0x1014680E8, "1f200079"),  # STRH WZR,[X0,#0x10]（场景 tick 弧清态点）
 ]
 
 # ---- 门禁静态补丁（形态 0；7.0.255 重定位 2026-09-18，注入即生效，可 --no-gates 关闭）----
@@ -619,6 +631,15 @@ def main():
         if not any(marker in open(d, "rb").read() for d in dylibs):
             print("[!] dylibs lack 'login-guard v1' support (need 2026-09-18+ build) —")
             print("    login-gate no-replay stubs would crash the app on first guard hit.")
+            sys.exit(3)
+
+    # 同款配对校验：autoplay 桩（ap_*）需要 dylib 侧有对应站点处理器（"autoplay-eve v1"）。
+    if any(n.startswith("ap_") for n, _s, _r, _e in BRK_HOOKS):
+        marker = b"autoplay-eve v1"
+        if not any(marker in open(d, "rb").read() for d in dylibs):
+            print("[!] dylibs lack 'autoplay-eve v1' support —")
+            print("    ap_* BRK sites would fall through to the fallback table on first hit")
+            print("    and chain to Swift/Crashlytics trap handlers. Refusing to mix.")
             sys.exit(3)
 
     os.makedirs(FW_DIR, exist_ok=True)
