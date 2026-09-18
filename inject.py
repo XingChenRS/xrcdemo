@@ -124,6 +124,11 @@ BRK_HOOKS = [
 GATE_PATCHES = [
     # 离线 BYD 门（6.13 0x1007D1FD5 的 7.0 对应）
     ("byd_offline_gate",  0x10084D778, "9f0e0071", "9fbe0071"),
+    # 下载态判定（2026-09-19 定位，子代理 T1；补丁形式与 BYD 门同款单字节 imm12 翻转
+    #   3 → 0x2F：把"难度==3 → 下载式文件清单(mode 2)"的触发条件废掉，BYD 走标准 mode 0，
+    #   下载态随 cb 预置内容判"就绪"。两处分别是状态查询与可玩性捷径。）：
+    ("byd_state_mode",    0x100844830, "5f0c0071", "5fbc0071"),  # sub_100844774：CMP W2,#3 → #0x2F
+    ("byd_playable_hint", 0x10084EC7C, "9f0e0071", "9fbe0071"),  # sub_10084EC30：CMP W20,#3 → #0x2F
 ]
 # 重放跳板必须避免 PC 相关指令（ADRP/ADR/B/BL/CBZ/TBZ/LDR-literal）——
 # 跳板在别处执行，PC 相对寻址会算错。这里只做"显然安全"的粗筛并提示。
