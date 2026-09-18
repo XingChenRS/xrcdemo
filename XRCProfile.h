@@ -283,6 +283,12 @@
 #define XRC_BRK_LOCK_FV_REPLAY_OFF      (0x1468100ULL)
 #define XRC_BRK_LOCK_DO_SITE_OFF        (0xAAE50CULL)
 #define XRC_BRK_LOCK_DO_REPLAY_OFF      (0x1468108ULL)
+// v2.7 终章链门覆盖：sub_10099156C 是 FV 五曲"锁标 + 开局门"的**共同上游**——
+//   锁态函数 sub_100991508 与可玩性谓词 sub_100919874（选曲 cell / Play 门）都调它；
+//   未推进终章链时返回 1 = 锁 → 既显示锁标也挡住 start。
+//   入口直返 0（未锁）；开关 = unlock_all。入口指令 SUB SP,#0xC0，重放安全。
+#define XRC_BRK_FV_GATE_SITE_OFF        (0x99156CULL)
+#define XRC_BRK_FV_GATE_REPLAY_OFF      (0x1468110ULL)
 // 自动演奏站点处理器引用的 7.0 布局常量（出处同上：D9A0/CBB0 反汇编 + vtable 符号表）。
 #define XRC_NOTE_TIME_END_OFF       28            // note+0x1C = 窗口时刻（判定 pass 两处 CMP 的依据；
                                                   // 注：旧记录"note+28=判定类型"来自别的对象，已修正）
