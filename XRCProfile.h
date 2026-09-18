@@ -291,6 +291,16 @@
                                                // （= 引擎真触路径用的函数；x1 由 hold vtable 槽直接引用）
 #define XRC_OFF_FN_ARC_SPRITE  (0x187618ULL)   // 弧"子对象/sprite"getter：sub_100187618(note)（8B，LDR+RET）
                                                // 引擎在弧清态/置触处均用它取目标后写 +0x10/+0x12/+0x14
+// v2.4（2026-09-19）：弧/长条"被接住"语义补齐。出处 = eve handler 转储
+// （arceve_x/handlers/8autoplay22mark_long_note_touched.txt）+ 两侧 vtable 槽位对齐
+// （hold/arc vtable[12] = sub_1008E4864 / sub_100187620；eve 0x10084A2D8 / 0x1001264A4）。
+#define XRC_OFF_FN_ARC_CONSUME (0x187620ULL)   // 弧被触消费（弧 vtable[12]）：按弧上最近段时刻算 sprite+0x14
+                                               // 到期值、置 note+0x64 字、派发事件(ev=0)、调弧对象 vtable 刷新；
+                                               // 第 2 参 = 0x40B 事件结构（仅 +0x34 被读；-1 = 无手指哨兵）
+#define XRC_NOTE_HOLD_POS_OFF  (48)            // note+0x30 = hold 位置/时刻对（slot3 重置方法写它；
+                                               // eve hold 分支每帧把低 32 位置 0）
+#define XRC_NOTE_HELD_OFF      (168)           // note+0xA8 bit0 = "被接住/保持中"（sub_10091E58C 与尾部时刻
+                                               // 联合读取；eve hold 分支每帧置 1——不写则长条显示为未接住）
 
 // ---------------- OnlineManager 探针 / applog 强发（XRCOMLog）----------------
 // 出处: 2026-09-12 真机内存转储（incoming/xrcdemo-net-new/mem, 276MB, 972 区域）

@@ -283,14 +283,18 @@ static int32_t s_ap_chart_now(uint64_t ng) {
     return cur - base + (cur > 0 ? 0 : XRC_CLK_NEG_LEAD_MS);
 }
 
-// 长条"被触"标记（v2.3：拆成"逐帧标志" + "一次性事件"）。
-// 真机日志（2026-09-19）定量：引擎每帧会清掉长条的 +0x64（弧/长条的 update 方法），
-// 于是 v2.1 的"整段标记"每帧都重跑一次引擎标记函数 → 其中 sub_100B69644 的事件派发
-// 每秒触发 ~840 次 → 音效/特效队列积压 → arc/hold 反馈"巨大延迟"（tap 每判定只派发一次，故正常）。
-// v2.3 语义：
-//   · 逐帧写 note+0x64 字 = 0x0101（+ 弧 sprite 字段）——维持引擎的 Pure tick 路径（廉价字段写）；
-//   · 引擎标记函数（事件派发）**每音符只调一次**——(note,note时刻) 门闩去重 + 头部窗口守卫，
-//     与手动游玩"手指刚触到音符"的语义对齐（事件与特效时刻 = 音符头部）。
+// 长条/弧"被触"标记（v2.4：与 eve mark_long_note_touched 逐条对齐；出处见 XRCProfile.h）。
+// 历史：v2.1 每帧重调引擎标记函数 → 事件派发 ~840/s → 音效/特效积压（真机日志定量）；
+//       v2.3 拆成"逐帧标志 + 每音符一次调用"，修掉积压，但两处语义仍缺：
+//         · hold 未写 note+0x30=0 / note+0xA8=1（后者 = "被接住"，引擎 sub_10091E58C 联合尾部时刻读
+//           → 不写则长条/弧显示为"未接住、直接穿过判定线"）；
+//         · arc 误调 hold 的标记函数（eve 对 arc 调弧消费 sub_100187620：按最近段时刻算 sprite 到期、
+//           派发事件 0、调弧对象 vtable 刷新）。
+// v2.4 语义：
+//   守卫：active==1；弧须非 void；now >= 音符头部；now <= 尾部 +100ms；hold 还须 now >= 头部 +16ms；
+//   每音符一次（门闩）：arc → sub_100187620(note, {…,+0x34=-1}, now)；hold → sub_1008E4864(note)
+//                        （之后补 note+0x30 低字=0、note+0xA8=1）；
+//   逐帧：note+0x64 字 = 0x0101（维持引擎 Pure tick 路径；弧另写 sprite +0x10/+0x12/+0x14）。
 static _Atomic(uint64_t) s_ap_latch_ptr[256];
 static _Atomic(uint32_t) s_ap_latch_t[256];
 
@@ -317,10 +321,28 @@ static void s_ap_mark_ln(uint64_t note, uint64_t ng) {
     int32_t now = s_ap_chart_now(ng);
     if (now < 0) return;
     int32_t t0  = (int32_t)s_ap_ld32(note + XRC_NOTE_TIME_OFF);
-    if (t0 - now > 100) return;   // 未到头部窗口：不标记（标志/事件都对到音符头部，与手动一致）
-    // 1) 逐帧维持"被触"（引擎每帧清；只写字段，不派发事件）
+    int32_t t1  = (int32_t)s_ap_ld32(note + XRC_NOTE_TIME_END_OFF);
+    if (now < t0) return;                 // 头部之前不标记（eve）
+    if (now > t1 + 100) return;           // 尾部之后 +100ms 停止（eve）
+    if (is_hold && now < t0 + 16) return; // hold 头部 16ms 内不标记（eve）
+    // 1) 每音符一次的引擎调用（touch-begin 语义）
+    if (s_ap_dispatch_once(note, t0)) {
+        if (is_arc) {
+            uint8_t ctx[0x40] = {0};
+            *(int32_t *)(ctx + 0x34) = -1;   // 事件结构：仅 +0x34 被读（-1 = 无手指哨兵，eve 同款）
+            ((void (*)(uint64_t, void *, int32_t))(mb + XRC_OFF_FN_ARC_CONSUME))(note, ctx, now);
+        } else {
+            ((void (*)(uint64_t))(mb + XRC_OFF_FN_MARK_HOLD))(note);
+        }
+    }
+    // 2) hold 的"被接住"状态（eve hold 分支专属；缺它则显示未接住）
+    if (is_hold) {
+        *(volatile uint32_t *)(note + XRC_NOTE_HOLD_POS_OFF) = 0;
+        *(volatile uint8_t  *)(note + XRC_NOTE_HELD_OFF)     = 1;
+    }
+    // 3) 逐帧维持"被触"（引擎每帧清；只写字段，不派发事件）
     *(volatile uint16_t *)(note + XRC_NOTE_LNSTATE_OFF) = 0x0101;
-    // 2) 弧：sprite 触摸态字段（+0x10/+0x12/+0x14=now+500，eve 配方）
+    // 4) 弧：sprite 触摸态字段（+0x10/+0x12/+0x14=now+500，eve 配方）
     if (is_arc) {
         uint64_t spr = ((uint64_t (*)(uint64_t))(mb + XRC_OFF_FN_ARC_SPRITE))(note);
         if (s_ap_ptr_ok(spr)) {
@@ -329,10 +351,6 @@ static void s_ap_mark_ln(uint64_t note, uint64_t ng) {
             *(volatile float    *)(spr + 0x14) = (float)(now + 500);
         }
     }
-    // 3) 一次性事件（引擎 touch-begin 语义；门闩去重，每音符一次）
-    if (s_ap_dispatch_once(note, t0))
-        ((void (*)(uint64_t))(mb + XRC_OFF_FN_MARK_HOLD))(note);
-    (void)is_hold;
     atomic_fetch_add(&s_ap_stat_mark, 1);
 }
 
@@ -596,7 +614,7 @@ void xrc_brk_setup(uint64_t image_base) {
     xrc_log(@"[brk] login-guard v1 ready (login_open=%d, slots=%d)",
             (int)atomic_load(&s_login_open), atomic_load(&s_count));
     // 同款配对标记：自动演奏站点（ap_*）由本 dylib 处理；旧 dylib 无此表 → 注入脚本拒配。
-    xrc_log(@"[brk] autoplay-eve v1 ready (autoplay=%d)", (int)xrc_judge_autoplay());
+    xrc_log(@"[brk] autoplay-eve v1 ready (v2.4 mark=arc-consume/hold-held; autoplay=%d)", (int)xrc_judge_autoplay());
     xrc_brk_capture_enable(true);
 }
 
