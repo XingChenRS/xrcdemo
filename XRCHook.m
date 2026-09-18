@@ -257,12 +257,13 @@ static inline uint8_t  s_ap_ld8 (uint64_t a) { return *(volatile uint8_t  *)a; }
 static inline bool     s_ap_ptr_ok(uint64_t p) { return p >= 0x100000000ULL && (p & 7u) == 0; }
 
 // 自动演奏诊断计数（v2.1；0.5s 定时器按 10s 汇总落日志，Tweak.x）。
-static _Atomic(uint32_t) s_ap_stat_mark = 0, s_ap_stat_mark_skip = 0;
+// v2.3 语义：mark = 逐帧标志写次数，disp = 引擎标记函数（事件派发）实际调用次数（应 ≈ 音符数）。
+static _Atomic(uint32_t) s_ap_stat_mark = 0, s_ap_stat_dispatch = 0;
 static _Atomic(uint32_t) s_ap_stat_win_note = 0, s_ap_stat_win_tap = 0;
 static _Atomic(uint32_t) s_ap_stat_tick1 = 0, s_ap_stat_tick2 = 0;
 void xrc_brk_ap_stats(uint32_t out[6]) {
     out[0] = atomic_load(&s_ap_stat_mark);
-    out[1] = atomic_load(&s_ap_stat_mark_skip);
+    out[1] = atomic_load(&s_ap_stat_dispatch);
     out[2] = atomic_load(&s_ap_stat_win_note);
     out[3] = atomic_load(&s_ap_stat_win_tap);
     out[4] = atomic_load(&s_ap_stat_tick1);
@@ -282,15 +283,28 @@ static int32_t s_ap_chart_now(uint64_t ng) {
     return cur - base + (cur > 0 ? 0 : XRC_CLK_NEG_LEAD_MS);
 }
 
-// 长条"被触"标记（v2.1：改为调用**引擎自己的**被触函数，不再手写标志字节）。
-// 依据（2026-09-19 IDA）：
-//   · 长条：sub_1008E4864(note) = 事件派发 sub_100B69644(model, 2, note 时刻, 0, 0) + `note+0x64 字 = 0x0101`
-//     —— 即引擎真触路径所用的函数（被 hold vtable 槽直接引用）。v2 只写字节、漏了事件派发，
-//     与"长条/弧的打击特效与手动差异大"的现象吻合。
-//   · 弧：引擎无独立标记函数 → 保持字段写入（note+0x64 字 + sprite 的 +0x10/+0x12/+0x14=now+500，
-//     与 eve mark_long_note_touched 的字段配方一致）。
+// 长条"被触"标记（v2.3：拆成"逐帧标志" + "一次性事件"）。
+// 真机日志（2026-09-19）定量：引擎每帧会清掉长条的 +0x64（弧/长条的 update 方法），
+// 于是 v2.1 的"整段标记"每帧都重跑一次引擎标记函数 → 其中 sub_100B69644 的事件派发
+// 每秒触发 ~840 次 → 音效/特效队列积压 → arc/hold 反馈"巨大延迟"（tap 每判定只派发一次，故正常）。
+// v2.3 语义：
+//   · 逐帧写 note+0x64 字 = 0x0101（+ 弧 sprite 字段）——维持引擎的 Pure tick 路径（廉价字段写）；
+//   · 引擎标记函数（事件派发）**每音符只调一次**——(note,note时刻) 门闩去重 + 头部窗口守卫，
+//     与手动游玩"手指刚触到音符"的语义对齐（事件与特效时刻 = 音符头部）。
+static _Atomic(uint64_t) s_ap_latch_ptr[256];
+static _Atomic(uint32_t) s_ap_latch_t[256];
+
+static bool s_ap_dispatch_once(uint64_t note, int32_t t0) {
+    uint32_t h = (uint32_t)((note >> 4) ^ (uint64_t)(uint32_t)t0) & 255u;
+    if (atomic_load(&s_ap_latch_ptr[h]) == note && atomic_load(&s_ap_latch_t[h]) == (uint32_t)t0)
+        return false;
+    atomic_store(&s_ap_latch_ptr[h], note);
+    atomic_store(&s_ap_latch_t[h], (uint32_t)t0);
+    atomic_fetch_add(&s_ap_stat_dispatch, 1);
+    return true;
+}
+
 // 守卫（eve 同款）：vtable ∈ {arc,hold}、active==1、弧须非 void（note+0xA4==0）。
-// 只在"未标记→标记"的跳变时动作（避免逐帧重复派发事件）。
 static void s_ap_mark_ln(uint64_t note, uint64_t ng) {
     uint64_t mb = atomic_load(&s_main_base);
     if (!mb || !s_ap_ptr_ok(note)) return;
@@ -300,22 +314,25 @@ static void s_ap_mark_ln(uint64_t note, uint64_t ng) {
     if (!is_arc && !is_hold) return;
     if (s_ap_ld8(note + XRC_NOTE_ACTIVE_OFF) != 1) return;
     if (is_arc && s_ap_ld32(note + XRC_LN_VOID_OFF) != 0) return;   // void/trace 弧不标记
-    if (s_ap_ld8(note + XRC_NOTE_LNSTATE_OFF) == 1) {
-        atomic_fetch_add(&s_ap_stat_mark_skip, 1);
-        return;
-    }
-    if (is_hold) {
-        ((void (*)(uint64_t))(mb + XRC_OFF_FN_MARK_HOLD))(note);
-    } else {
-        *(volatile uint16_t *)(note + XRC_NOTE_LNSTATE_OFF) = 0x0101;
+    int32_t now = s_ap_chart_now(ng);
+    if (now < 0) return;
+    int32_t t0  = (int32_t)s_ap_ld32(note + XRC_NOTE_TIME_OFF);
+    if (t0 - now > 100) return;   // 未到头部窗口：不标记（标志/事件都对到音符头部，与手动一致）
+    // 1) 逐帧维持"被触"（引擎每帧清；只写字段，不派发事件）
+    *(volatile uint16_t *)(note + XRC_NOTE_LNSTATE_OFF) = 0x0101;
+    // 2) 弧：sprite 触摸态字段（+0x10/+0x12/+0x14=now+500，eve 配方）
+    if (is_arc) {
         uint64_t spr = ((uint64_t (*)(uint64_t))(mb + XRC_OFF_FN_ARC_SPRITE))(note);
         if (s_ap_ptr_ok(spr)) {
             *(volatile uint16_t *)(spr + 0x10) = 0x0101;
             *(volatile uint8_t  *)(spr + 0x12) = 1;
-            int32_t now = s_ap_chart_now(ng);
-            if (now > 0) *(volatile float *)(spr + 0x14) = (float)(now + 500);
+            *(volatile float    *)(spr + 0x14) = (float)(now + 500);
         }
     }
+    // 3) 一次性事件（引擎 touch-begin 语义；门闩去重，每音符一次）
+    if (s_ap_dispatch_once(note, t0))
+        ((void (*)(uint64_t))(mb + XRC_OFF_FN_MARK_HOLD))(note);
+    (void)is_hold;
     atomic_fetch_add(&s_ap_stat_mark, 1);
 }
 
