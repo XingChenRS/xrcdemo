@@ -14,6 +14,7 @@
 
 #import <substrate.h>
 #import <time.h>
+#include <string.h>
 #import <dlfcn.h>
 #import <mach-o/dyld.h>
 #import <sys/time.h>
@@ -231,16 +232,32 @@ static void doBootstrap(void) {
             xrc_clock_set_rate((double)g_cfg.speeds[g_cfg.rate_index]);
         xrc_log(@"config path: %@", xrc_config_path());
         [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) {
-            // BRK 桩统计：只在计数变化时落一行（回答"applog 何时触发"）
+            // BRK 桩统计：只在计数变化时落一行（回答"applog 何时触发"）。
+            // ap_*（自动演奏）站点是逐音符/逐帧热点，不走这里——见下方 10s 汇总，避免刷爆日志。
             static uint32_t last_brk[XRC_BRK_MAX_SLOTS];
             int ns = xrc_brk_slot_count();
             for (int i = 0; i < ns; i++) {
+                const char *nm = xrc_brk_slot_name(i);
+                if (nm && strncmp(nm, "ap_", 3) == 0) continue;
                 uint32_t h = xrc_brk_hits(i);
                 if (h != last_brk[i]) {
                     xrc_log(@"[brk] %s hits=%u last=%.3fms",
                             xrc_brk_slot_name(i), h,
                             (double)xrc_brk_last_hit_us(i) / 1000.0);
                     last_brk[i] = h;
+                }
+            }
+            // 自动演奏汇总：每 10s 一行（mark/skip/窗口强判/引擎 tick 数）+ 判定计数。
+            // 用于对账"物量/分数 vs 原谱"：tick1 = 引擎发的 Pure tick 判定数量。
+            {
+                static int ap_tick = 0;
+                if (++ap_tick >= 20) {
+                    ap_tick = 0;
+                    uint32_t st[6] = {0};
+                    xrc_brk_ap_stats(st);
+                    xrc_log(@"[ap] mark=%u skip=%u win_note=%u win_tap=%u tick1=%u tick2=%u",
+                            st[0], st[1], st[2], st[3], st[4], st[5]);
+                    xrc_judge_log_stats();
                 }
             }
             // applog 明文捕获落盘（加密前）。缓冲放静态区，避免块捕获大数组。

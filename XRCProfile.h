@@ -268,15 +268,29 @@
 #define XRC_BRK_AP_SWALLOW_BATCH_REPLAY_OFF (0x14680D8ULL)
 #define XRC_BRK_AP_SWALLOW_TOUCH_REPLAY_OFF (0x14680E0ULL)
 #define XRC_BRK_AP_ARC_VISUAL_REPLAY_OFF   (0x14680E8ULL)
+// v2.1 诊断计数站点（2026-09-19）：引擎 tick 助手的返回点（MOV X26,X0 → 重放安全），
+// 用来量化"引擎自己发了多少 tick 判定"（对账 v2 试玩中物量/分数超出原谱的疑点）。
+#define XRC_BRK_AP_TICKCNT1_SITE_OFF    (0x91DCBCULL) // helper1(sub_10091E878, Pure tick) 返回后：X0 = 本次 Pure tick 数
+#define XRC_BRK_AP_TICKCNT2_SITE_OFF    (0x91DDBCULL) // helper2(sub_10091E958, Lost tick) 返回后：X0 = 本次 Lost tick 数
+#define XRC_BRK_AP_TICKCNT1_REPLAY_OFF  (0x14680F0ULL)
+#define XRC_BRK_AP_TICKCNT2_REPLAY_OFF  (0x14680F8ULL)
 // 自动演奏站点处理器引用的 7.0 布局常量（出处同上：D9A0/CBB0 反汇编 + vtable 符号表）。
 #define XRC_NOTE_TIME_END_OFF       28            // note+0x1C = 窗口时刻（判定 pass 两处 CMP 的依据；
                                                   // 注：旧记录"note+28=判定类型"来自别的对象，已修正）
 #define XRC_NOTE_ACTIVE_OFF         84            // note+0x54 = active 字节（与 Android/6.x 同偏移）
 #define XRC_NOTE_LNSTATE_OFF        100           // note+0x64 = longTouchState 首字节（6.x 0x5C 漂移 +8）
+#define XRC_LN_VOID_OFF             164           // note+0xA4 = 弧 isVoid（弧 vtable[11]=sub_100187C78 读的字段；
+                                                  // 6.x 0x9C 漂移 +8，与 Android 7.0 一致）
 #define XRC_LN_VPTR_ARC             0x149C020ULL  // _ZTV12LogicArcNote + 16（对象 vptr）
 #define XRC_LN_VPTR_HOLD            0x14B7980ULL  // _ZTV13LogicHoldNote + 16
 #define XRC_AP_NOTE_WIN_CONT_OFF    (0x91DD44ULL) // 窗口强判后的原版汇合点（W19=0;W26=1 → 弧态更新+子扫描）
-#define XRC_AP_ARCTAP_WIN_CONT_OFF  (0x91DF5CULL) // 子音符循环续点（ADD X26,X26,#8）
+#define XRC_AP_ARCTAP_WIN_CONT_OFF  (0x91DD44ULL) // 弧子音符强判后同一汇合点（对齐 eve：其 success 走 0x100872180
+                                                  // → 7.0 0x91DD20 的等价落点；v2 曾跳 0x91DF5C 会丢弧"被触"视觉）
+// ---- 引擎自身的"被触"标记函数（2026-09-19 定位；v2.1 起替代手写 +0x64 标记）----
+#define XRC_OFF_FN_MARK_HOLD   (0x8E4864ULL)   // 长条被触：事件派发(sub_100B69644 ev=2, note 时刻) + note+0x64 字 = 0x0101
+                                               // （= 引擎真触路径用的函数；x1 由 hold vtable 槽直接引用）
+#define XRC_OFF_FN_ARC_SPRITE  (0x187618ULL)   // 弧"子对象/sprite"getter：sub_100187618(note)（8B，LDR+RET）
+                                               // 引擎在弧清态/置触处均用它取目标后写 +0x10/+0x12/+0x14
 
 // ---------------- OnlineManager 探针 / applog 强发（XRCOMLog）----------------
 // 出处: 2026-09-12 真机内存转储（incoming/xrcdemo-net-new/mem, 276MB, 972 区域）

@@ -47,6 +47,9 @@ int         xrc_brk_slot_count(void);
 const char *xrc_brk_slot_name(int slot_index);
 uint64_t    xrc_brk_last_hit_us(int slot_index);   // mach_absolute_time 微秒
 
+// 自动演奏诊断计数（v2.1）：mark/skip/窗口强判(音符号,弧子音符)/引擎 tick(Pure,Lost)。
+void        xrc_brk_ap_stats(uint32_t out[6]);
+
 // ---- applog 明文捕获 ----
 // 处理器在 applog 桩点处按 OnlineManager+0x128/+0x130 抓取**加密前**的明文到内部
 // 缓冲（async-signal-safe：只做 memcpy + 原子写）。主线程用 take() 取走再落盘。

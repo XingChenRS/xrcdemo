@@ -109,6 +109,10 @@ BRK_HOOKS = [
     ("ap_swallow_batch", 0x10091F688, 0x1014680D8, "ff8302d1"),  # SUB SP,#0xA0（输入批处理 sub_10091F688 入口）
     ("ap_swallow_touch", 0x100921DC4, 0x1014680E0, "ff0302d1"),  # SUB SP,#0x80（触摸批 sub_100921DC4 入口）
     ("ap_arc_visual",    0x10091CC84, 0x1014680E8, "1f200079"),  # STRH WZR,[X0,#0x10]（场景 tick 弧清态点）
+    # v2.1 诊断计数（2026-09-19）：引擎两个 tick 助手的返回点（MOV X26,X0；重放安全），
+    # 量化"引擎自己发了多少 tick 判定"（对账物量/分数 vs 原谱）。
+    ("ap_tickcnt1",      0x10091DCBC, 0x1014680F0, "fa0300aa"),  # MOV X26,X0（helper1=sub_10091E878 返回后，Pure tick 数）
+    ("ap_tickcnt2",      0x10091DDBC, 0x1014680F8, "fa0300aa"),  # MOV X26,X0（helper2=sub_10091E958 返回后，Lost tick 数）
 ]
 
 # ---- 门禁静态补丁（形态 0；7.0.255 重定位 2026-09-18，注入即生效，可 --no-gates 关闭）----

@@ -256,24 +256,76 @@ static inline uint32_t s_ap_ld32(uint64_t a) { return *(volatile uint32_t *)a; }
 static inline uint8_t  s_ap_ld8 (uint64_t a) { return *(volatile uint8_t  *)a; }
 static inline bool     s_ap_ptr_ok(uint64_t p) { return p >= 0x100000000ULL && (p & 7u) == 0; }
 
-// 长条"被触"态：note+0x64/+0x65 = 1（= eve mark_long_note_touched 在 6.x 写 +0x5C 的同款两字节；
-// 7.0 判定 pass 的 "CMP W8,#1" 门读的就是 +0x64）。只认 弧/长条 vtable + active，避免误伤。
-static void s_ap_mark_ln(uint64_t note) {
+// 自动演奏诊断计数（v2.1；0.5s 定时器按 10s 汇总落日志，Tweak.x）。
+static _Atomic(uint32_t) s_ap_stat_mark = 0, s_ap_stat_mark_skip = 0;
+static _Atomic(uint32_t) s_ap_stat_win_note = 0, s_ap_stat_win_tap = 0;
+static _Atomic(uint32_t) s_ap_stat_tick1 = 0, s_ap_stat_tick2 = 0;
+void xrc_brk_ap_stats(uint32_t out[6]) {
+    out[0] = atomic_load(&s_ap_stat_mark);
+    out[1] = atomic_load(&s_ap_stat_mark_skip);
+    out[2] = atomic_load(&s_ap_stat_win_note);
+    out[3] = atomic_load(&s_ap_stat_win_tap);
+    out[4] = atomic_load(&s_ap_stat_tick1);
+    out[5] = atomic_load(&s_ap_stat_tick2);
+}
+
+// 谱面时刻（与判定核/判定 pass 同一公式：clock = ng+0x30）。
+static int32_t s_ap_chart_now(uint64_t ng) {
+    if (!s_ap_ptr_ok(ng)) return -1;
+    uint64_t clk = s_ap_ld64(ng + XRC_CLOCK_IN_NOTEGROUP_OFF);
+    if (!s_ap_ptr_ok(clk)) return -1;
+    if (s_ap_ld8(clk + XRC_CLK_FLAG45_OFF) == 1)
+        return (int32_t)((int32_t)s_ap_ld32(clk + XRC_CLK_ALT_START_OFF) -
+                         (int32_t)s_ap_ld32(clk + XRC_CLK_BASE_OFF));
+    int32_t cur  = (int32_t)s_ap_ld32(clk + XRC_CLK_CUR_OFF);
+    int32_t base = (int32_t)s_ap_ld32(clk + XRC_CLK_BASE_OFF);
+    return cur - base + (cur > 0 ? 0 : XRC_CLK_NEG_LEAD_MS);
+}
+
+// 长条"被触"标记（v2.1：改为调用**引擎自己的**被触函数，不再手写标志字节）。
+// 依据（2026-09-19 IDA）：
+//   · 长条：sub_1008E4864(note) = 事件派发 sub_100B69644(model, 2, note 时刻, 0, 0) + `note+0x64 字 = 0x0101`
+//     —— 即引擎真触路径所用的函数（被 hold vtable 槽直接引用）。v2 只写字节、漏了事件派发，
+//     与"长条/弧的打击特效与手动差异大"的现象吻合。
+//   · 弧：引擎无独立标记函数 → 保持字段写入（note+0x64 字 + sprite 的 +0x10/+0x12/+0x14=now+500，
+//     与 eve mark_long_note_touched 的字段配方一致）。
+// 守卫（eve 同款）：vtable ∈ {arc,hold}、active==1、弧须非 void（note+0xA4==0）。
+// 只在"未标记→标记"的跳变时动作（避免逐帧重复派发事件）。
+static void s_ap_mark_ln(uint64_t note, uint64_t ng) {
     uint64_t mb = atomic_load(&s_main_base);
     if (!mb || !s_ap_ptr_ok(note)) return;
     uint64_t vt = s_ap_ld64(note);
-    if (vt != mb + XRC_LN_VPTR_ARC && vt != mb + XRC_LN_VPTR_HOLD) return;
+    bool is_arc  = (vt == mb + XRC_LN_VPTR_ARC);
+    bool is_hold = (vt == mb + XRC_LN_VPTR_HOLD);
+    if (!is_arc && !is_hold) return;
     if (s_ap_ld8(note + XRC_NOTE_ACTIVE_OFF) != 1) return;
-    *(volatile uint8_t *)(note + XRC_NOTE_LNSTATE_OFF) = 1;
-    *(volatile uint8_t *)(note + XRC_NOTE_LNSTATE_OFF + 1) = 1;
+    if (is_arc && s_ap_ld32(note + XRC_LN_VOID_OFF) != 0) return;   // void/trace 弧不标记
+    if (s_ap_ld8(note + XRC_NOTE_LNSTATE_OFF) == 1) {
+        atomic_fetch_add(&s_ap_stat_mark_skip, 1);
+        return;
+    }
+    if (is_hold) {
+        ((void (*)(uint64_t))(mb + XRC_OFF_FN_MARK_HOLD))(note);
+    } else {
+        *(volatile uint16_t *)(note + XRC_NOTE_LNSTATE_OFF) = 0x0101;
+        uint64_t spr = ((uint64_t (*)(uint64_t))(mb + XRC_OFF_FN_ARC_SPRITE))(note);
+        if (s_ap_ptr_ok(spr)) {
+            *(volatile uint16_t *)(spr + 0x10) = 0x0101;
+            *(volatile uint8_t  *)(spr + 0x12) = 1;
+            int32_t now = s_ap_chart_now(ng);
+            if (now > 0) *(volatile float *)(spr + 0x14) = (float)(now + 500);
+        }
+    }
+    atomic_fetch_add(&s_ap_stat_mark, 1);
 }
 
-// 长条触摸态读取点（命中时 X0 = 长条 note）：标记后不改 PC → 重放原 LDRB → 原版走"被触"分支。
+// 长条触摸态读取点（命中时 X0 = 长条 note、X20 = note group）：标记后不改 PC → 重放原 LDRB。
 static void s_ap_ln_state(void *vctx) {
     if (!xrc_judge_autoplay()) return;
     ucontext_t *uc = (ucontext_t *)vctx;
     if (!uc || !uc->uc_mcontext) return;
-    s_ap_mark_ln(uc->uc_mcontext->__ss.__x[0]);
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    s_ap_mark_ln(ss->__x[0], ss->__x[20]);
 }
 
 // 长条判定派发前的 vtable 装载点（命中时 X27 = 长条 note）：同上（兜底标记）。
@@ -281,13 +333,14 @@ static void s_ap_ln_tick(void *vctx) {
     if (!xrc_judge_autoplay()) return;
     ucontext_t *uc = (ucontext_t *)vctx;
     if (!uc || !uc->uc_mcontext) return;
-    s_ap_mark_ln(uc->uc_mcontext->__ss.__x[27]);
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    s_ap_mark_ln(ss->__x[27], ss->__x[20]);
 }
 
 // 窗口点强判（note_win / arctap_win 共用）：note = 音符寄存器、ng = X20、now = X2。
 // 谱面时刻 >= note+0x1C（窗口时刻）→ 直调 commit(Pure, judge_time=窗口时刻) + fx[1]，
 // PC 跳至原版汇合点；未到窗口 → 不改 PC → 重放原 CMP（NZCV 由真实执行产生，分支语义不变）。
-static void s_ap_window(void *vctx, int note_reg, uint64_t cont_off) {
+static void s_ap_window(void *vctx, int note_reg, uint64_t cont_off, _Atomic(uint32_t) *ctr) {
     if (!xrc_judge_autoplay()) return;
     ucontext_t *uc = (ucontext_t *)vctx;
     if (!uc || !uc->uc_mcontext) return;
@@ -301,11 +354,24 @@ static void s_ap_window(void *vctx, int note_reg, uint64_t cont_off) {
     int32_t t_end = (int32_t)s_ap_ld32(note + XRC_NOTE_TIME_END_OFF);
     if (t_end > now) return;   // 窗口未到：原版比较继续（重放）
     xrc_judge_autoplay_pure(ng, note, t_end);
+    atomic_fetch_add(ctr, 1);
     __darwin_arm_thread_state64_set_pc_fptr(*ss, (void *)(mb + cont_off));
 }
 
-static void s_ap_note_win(void *vctx)   { s_ap_window(vctx, 28, XRC_AP_NOTE_WIN_CONT_OFF); }
-static void s_ap_arctap_win(void *vctx) { s_ap_window(vctx, 27, XRC_AP_ARCTAP_WIN_CONT_OFF); }
+static void s_ap_note_win(void *vctx)   { s_ap_window(vctx, 28, XRC_AP_NOTE_WIN_CONT_OFF, &s_ap_stat_win_note); }
+static void s_ap_arctap_win(void *vctx) { s_ap_window(vctx, 27, XRC_AP_ARCTAP_WIN_CONT_OFF, &s_ap_stat_win_tap); }
+
+// 引擎 tick 计数（诊断；命中点 = 两个 tick 助手的返回后 MOV X26,X0，X0 = 本次 tick 数）。
+// 不改 PC → 分发器重放该 MOV。用来对账"引擎自己发了多少 tick 判定"。
+static void s_ap_tickcnt(void *vctx, _Atomic(uint32_t) *ctr) {
+    if (!xrc_judge_autoplay()) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    int32_t n = (int32_t)uc->uc_mcontext->__ss.__x[0];
+    if (n > 0) atomic_fetch_add(ctr, (uint32_t)n);
+}
+static void s_ap_tickcnt1(void *vctx) { s_ap_tickcnt(vctx, &s_ap_stat_tick1); }
+static void s_ap_tickcnt2(void *vctx) { s_ap_tickcnt(vctx, &s_ap_stat_tick2); }
 
 // 触摸吞掉（三个输入入口共用）：x0 = 0 并直接按 LR 返回（函数体不执行 = 触摸不进游戏逻辑）。
 static void s_ap_swallow(void *vctx) {
@@ -386,6 +452,9 @@ static const xrc_brk_entry_t k_brk_entries[] = {
     { "ap_swallow_batch", XRC_BRK_AP_SWALLOW_BATCH_SITE_OFF, XRC_BRK_AP_SWALLOW_BATCH_REPLAY_OFF, s_ap_swallow },
     { "ap_swallow_touch", XRC_BRK_AP_SWALLOW_TOUCH_SITE_OFF, XRC_BRK_AP_SWALLOW_TOUCH_REPLAY_OFF, s_ap_swallow },
     { "ap_arc_visual",    XRC_BRK_AP_ARC_VISUAL_SITE_OFF,   XRC_BRK_AP_ARC_VISUAL_REPLAY_OFF,   s_ap_arc_visual },
+    // ---- 自动演奏诊断计数（v2.1）：引擎两个 tick 助手的返回点（MOV X26,X0；只计数+重放）----
+    { "ap_tickcnt1",      XRC_BRK_AP_TICKCNT1_SITE_OFF,     XRC_BRK_AP_TICKCNT1_REPLAY_OFF,     s_ap_tickcnt1 },
+    { "ap_tickcnt2",      XRC_BRK_AP_TICKCNT2_SITE_OFF,     XRC_BRK_AP_TICKCNT2_REPLAY_OFF,     s_ap_tickcnt2 },
 };
 
 static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
