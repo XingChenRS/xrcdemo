@@ -399,7 +399,7 @@ static void s_ap_arc_visual(void *vctx) {
         *(volatile uint16_t *)(child + 0x10) = 0x0101; // 重写"被触"（eve on_arc_visual_clear 同款）
         *(volatile uint8_t  *)(child + 0x12) = 1;
     }
-    s_ap_mark_ln(ss->__x[22]);
+    s_ap_mark_ln(ss->__x[22], ss->__x[19]);   // X22 = 弧 note，X19 = note group（场景 tick 簇的 self）
     __darwin_arm_thread_state64_set_pc_fptr(*ss,
         (void *)(mb + XRC_BRK_AP_ARC_VISUAL_SITE_OFF + 8));
 }
