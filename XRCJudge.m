@@ -14,18 +14,22 @@
 //     分支 A:               w10=*(int*)(clk+0x34); lead=(w10>0)?0:3000;
 //                           delta=|w8-w10+*(int*)(clk+0x28)+lead|;
 //                           dir=((w10-*(int*)(clk+0x28))+(w10>0?0:-3000) >= w8)?2:1
-//     delta <  T_pure → commit(grade 0, dir, ts, a6) + fx[1](fx,note,0,dir); return 1
-//     delta <  T_far  → commit(grade 1, dir, ts, a6) + fx[1](fx,note,1,dir); return 1
-//     delta <  T_lost → commit(grade 2, dir, ts, a6) + fx[1](fx,note,2,dir); return 1
-//     delta <= T_miss → commit_ln(ng+0x38, note, dir_ln) + fx[0](fx,note);   return 1
-//     else                                                                   return 0
+//     delta <  T_pure → commit(grade 0, dir=0, judge_time=w4, input_time=ts) + fx[1](fx,note,0,dir); return 1
+//     delta <  T_far  → commit(grade 1, dir,   judge_time=w4, input_time=ts) + fx[1](fx,note,1,dir); return 1
+//     delta <  T_lost → commit(grade 2, dir,   judge_time=w4, input_time=ts) + fx[1](fx,note,2,dir); return 1
+//     delta <= T_miss → commit_ln(ng+0x38, note, w4) + fx[0](fx,note);                              return 1
+//     else                                                                                          return 0
 //
 // 记分对象 = *(ng+0x38)，特效对象 = *(ng+0x40)（调用时现场读取，不缓存）。
-// commit = sub_100ACB880(6 参，首指令是 note->vtable[32](note, ts, a6) 门)；
+// commit = sub_100ACB880（6 参）。
+// ⚠ 2026-09-18 参数序修正（对 7.0 出口汇编逐条复核 + eve autoplay/on_miss 实参交叉验证）：
+//   commit(stats, note, grade, dir, judge_time = w4（现算时钟值 = cur−base±lead）,
+//          input_time = 入口 X2（ts；合成/无输入时 = −1）)
+//   旧稿写作 (grade, dir, ts, a6) 并转发 caller X6 —— 与游戏真序不符（正常对局数值相近才未暴露）。
+//   实证：游戏纯出口 0x10091E790 `W2=0; W3=0; X4=w4; X5=X21(入口X2)`；远/失出口同构；
+//        eve on_miss 强制 Pure 直调同样为 (…, 0, dir', judge_time, -1)。
 // commit_ln = sub_100ACB6A4(3 参，首指令是 note->vtable[56](note, 1) 门)。
-// 时间基：ts = 调用方 X2；delta 用 note+0x18。ts 的约定（游戏全局时间 ms /
-// note time 值域）尚未在真机校验，CMP 级联对时间基平移敏感——若窗口表现异常，
-// 用 slot 里的 orig 直通对照定位（见 §4 待验证项）。
+// 时间基：delta 用 note+0x18 与时钟现算；judge_time = w4。
 //
 // 与历史版本的差异（教训）：
 //   v8.4 漏 a5/a6 → 门不过 → 静默不计分；v8.6 漏特效调用 → 无打击特效；
@@ -90,14 +94,14 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
     int32_t note_ms = rd32(note + XRC_NOTE_TIME_OFF);
     uint64_t clk = rd64(ng + XRC_CLOCK_IN_NOTEGROUP_OFF);
     if (!clk) { atomic_fetch_add(&s_stat_gated, 1); return 0; }
-    int32_t delta, dir;
+    int32_t delta, dir, w4;   // w4 = 现算时钟值（= commit 的 judge_time，2026-09-18 修正）
     uint32_t dirv;   // LN 落账的第 3 参：原始比较值（不是 1/2），零扩展 32 位
     if (rd8(clk + XRC_CLK_FLAG45_OFF) == 1) {
         int32_t cur = rd32(clk + XRC_CLK_ALT_START_OFF);   // [clk+32]
         int32_t base = rd32(clk + XRC_CLK_BASE_OFF);       // [clk+40]
         int32_t d = note_ms - cur + base;
         delta = d < 0 ? -d : d;
-        int32_t w4 = cur - base;                           // SUB W4,W10,W11
+        w4 = cur - base;                                   // SUB W4,W10,W11（=judge_time）
         dirv = (uint32_t)w4;
         dir = (w4 >= note_ms) ? 2 : 1;
     } else {
@@ -107,7 +111,7 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
         int32_t d = note_ms - cur + base + lead;
         delta = d < 0 ? -d : d;
         int32_t lead2 = cur > 0 ? 0 : XRC_CLK_NEG_LEAD_MS; // -3000（dir 用）
-        int32_t w4 = (cur - base) + lead2;
+        w4 = (cur - base) + lead2;                         // （=judge_time）
         dirv = (uint32_t)w4;
         dir = (w4 >= note_ms) ? 2 : 1;
     }
@@ -115,16 +119,19 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
     // ---- 2.5 自动演奏（autoplay）：一切判定（含漏扫 ts=-1）强制 Pure ----
     // 关键事实（2026-09-18 IDA 实证）：未被触摸的音符由漏扫 sub_10091F688 在
     // note时间+120ms 处以 ts=-1 直调判定核 —— 亦即同样流经本 handler。
-    // 故 autoplay 无需任何新桩：本出口 = 全谱 Pure。ts 原样透传（与游戏自身
-    // sweep 调用的参数形态一致）；长条/弧线视觉的"触碰态"模拟见账本 §5 待办。
+    // 参数按 eve 强制 Pure 配方（arceve_x handlers/8autoplay7on_miss 实参交叉验证）：
+    //   commit(stats, note, grade=0, dir=0, judge_time=音符自身时间, input_time=-1)
+    //   · judge_time 用 note+0x18：判定落在"精确命中"时刻（门必过、视觉时序正确）
+    //   · input_time = -1 = 合成输入哨兵（eve 与 Android kInputTimeSynth 逐值一致）
     if (atomic_load(&s_autoplay)) {
         uint64_t stats = rd64(ng + XRC_OFF_JUDGE_COMMIT_OBJ);
         uint64_t fx    = rd64(ng + XRC_OFF_JUDGE_FX_OBJ);
         if (s_commit && stats)
-            s_commit(stats, note, 0 /*grade Pure*/, 0 /*dir*/, (uint64_t)ts, a6);
+            s_commit(stats, note, 0 /*Pure*/, 0 /*dir*/,
+                     (uint64_t)(uint32_t)note_ms /*judge_time*/, 0xFFFFFFFFULL /*input=-1*/);
         if (fx) {
             uint64_t f1 = rd64(rd64(fx) + 8);
-            if (f1) ((xrc_fx1_t)f1)(fx, note, 0, 0);
+            if (f1) ((xrc_fx1_t)f1)(fx, note, 0, (uint64_t)(uint32_t)dir);
         }
         atomic_fetch_add(&s_stat_pure, 1);
         return 1;
@@ -161,9 +168,11 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
         uint64_t stats = rd64(ng + XRC_OFF_JUDGE_COMMIT_OBJ);
         uint64_t fx    = rd64(ng + XRC_OFF_JUDGE_FX_OBJ);
         // commit 第 4 参：Pure 恒 0，Far/Lost 传 dir（照抄 10091e79c / e7e4 / e824）。
+        // 第 5/6 参（2026-09-18 修正）：judge_time = w4（现算时钟值）、input_time = 入口 X2。
         uint64_t a4 = (grade == 0) ? 0 : (uint64_t)(uint32_t)dir;
         if (s_commit && stats)
-            s_commit(stats, note, (uint64_t)(uint32_t)grade, a4, (uint64_t)ts, a6);
+            s_commit(stats, note, (uint64_t)(uint32_t)grade, a4,
+                     (uint64_t)(uint32_t)w4, (uint64_t)ts);
         if (fx) {
             uint64_t f1 = rd64(rd64(fx) + 8);   // vtable[1](fx, note, grade, dir)
             if (f1) ((xrc_fx1_t)f1)(fx, note, (uint64_t)(uint32_t)grade,
