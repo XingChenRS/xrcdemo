@@ -255,8 +255,8 @@ static void doBootstrap(void) {
                     ap_tick = 0;
                     uint32_t st[6] = {0};
                     xrc_brk_ap_stats(st);
-                    xrc_log(@"[ap] mark=%u disp=%u win_note=%u win_tap=%u tick1=%u tick2=%u",
-                            st[0], st[1], st[2], st[3], st[4], st[5]);
+                    xrc_log(@"[ap] mark=%u disp=%u win_note=%u win_tap=%u tick1=%u tick2=%u lock=%u",
+                            st[0], st[1], st[2], st[3], st[4], st[5], xrc_brk_lock_hits());
                     xrc_judge_log_stats();
                 }
             }

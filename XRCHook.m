@@ -188,6 +188,28 @@ static void s_cb_skip_void(void *vctx) {
         (void *)__darwin_arm_thread_state64_get_lr(*ss));
 }
 
+// ---------------- 曲目锁态覆盖（v2.6；取证 research/notes/xrc-packlock-rootcause-2026-09-19.md）----------------
+// 锁状态函数 sub_100919E5C 内两个专属子分支，各自只有一个调用方（都是锁态函数自身）：
+//   · 0x100991508 = FV 五曲 fast path（硬编码集合 {infinitestrife,worldender,pentiment,arcanaeden,testify}
+//     经 song+0x257 开关）——改名后其 "finale"/"epilogue" 字符串门失效 → 落存档位图 → 整曲显示锁定；
+//   · 0x100AAE50C = DO(konzetsu) 分支——读存档 insightPrechallengeRevealIndex，未推进时返回
+//     FTR+INS 可玩、其余锁（"显示锁定但 FTR 能打"即此）。
+// 两个函数都返回"六字节打包"的按难度解锁位（b0..b4 = PST/PRS/FTR/BYD/INS，1=可玩）。
+// 入口直接返回 0x0101010101 即可让显示一致地全解锁；开关复用 unlock_all（默认开），关时走原路径。
+static _Atomic(uint32_t) s_lock_hits = 0;
+uint32_t xrc_brk_lock_hits(void) { return atomic_load(&s_lock_hits); }
+
+static void s_lock_all(void *vctx) {
+    if (!atomic_load(&s_unlock_all)) return;   // 未开：不动 PC，分发器重放原指令
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    ss->__x[0] = 0x0000000101010101ULL;        // b0..b4 = 1（五难度类全解锁；b5 恒 0）
+    __darwin_arm_thread_state64_set_pc_fptr(*ss,
+        (void *)__darwin_arm_thread_state64_get_lr(*ss));
+    atomic_fetch_add(&s_lock_hits, 1);
+}
+
 // ---------------- 登录门守卫开关（功能账 §1.4；no-replay 变体，2026-09-18）----------------
 // 14 个站点均为 CBZ/TBZ（PC 相对指令）→ **不可重放**；处理器按 W0 自判分支走向：
 // 命中时 W0 = 紧邻的 BL checkA/checkB 返回值（14/14 逐站点核实）。永不使用 replay 槽。
@@ -490,6 +512,9 @@ static const xrc_brk_entry_t k_brk_entries[] = {
     // ---- 自动演奏诊断计数（v2.1）：引擎两个 tick 助手的返回点（MOV X26,X0；只计数+重放）----
     { "ap_tickcnt1",      XRC_BRK_AP_TICKCNT1_SITE_OFF,     XRC_BRK_AP_TICKCNT1_REPLAY_OFF,     s_ap_tickcnt1 },
     { "ap_tickcnt2",      XRC_BRK_AP_TICKCNT2_SITE_OFF,     XRC_BRK_AP_TICKCNT2_REPLAY_OFF,     s_ap_tickcnt2 },
+    // ---- 曲目锁态覆盖（v2.6）：FV 五曲 fast path / DO(konzetsu) 分支的入口直返全解锁 ----
+    { "lock_fv",          XRC_BRK_LOCK_FV_SITE_OFF,         XRC_BRK_LOCK_FV_REPLAY_OFF,         s_lock_all },
+    { "lock_do",          XRC_BRK_LOCK_DO_SITE_OFF,         XRC_BRK_LOCK_DO_REPLAY_OFF,         s_lock_all },
 };
 
 static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
@@ -614,7 +639,7 @@ void xrc_brk_setup(uint64_t image_base) {
     xrc_log(@"[brk] login-guard v1 ready (login_open=%d, slots=%d)",
             (int)atomic_load(&s_login_open), atomic_load(&s_count));
     // 同款配对标记：自动演奏站点（ap_*）由本 dylib 处理；旧 dylib 无此表 → 注入脚本拒配。
-    xrc_log(@"[brk] autoplay-eve v1 ready (v2.4 mark=arc-consume/hold-held; autoplay=%d)", (int)xrc_judge_autoplay());
+    xrc_log(@"[brk] autoplay-eve v1 ready (v2.6 mark=arc-consume/hold-held + lock-override; autoplay=%d)", (int)xrc_judge_autoplay());
     xrc_brk_capture_enable(true);
 }
 

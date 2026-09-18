@@ -274,6 +274,15 @@
 #define XRC_BRK_AP_TICKCNT2_SITE_OFF    (0x91DDBCULL) // helper2(sub_10091E958, Lost tick) 返回后：X0 = 本次 Lost tick 数
 #define XRC_BRK_AP_TICKCNT1_REPLAY_OFF  (0x14680F0ULL)
 #define XRC_BRK_AP_TICKCNT2_REPLAY_OFF  (0x14680F8ULL)
+// v2.6 曲目锁态覆盖站点（取证 research/notes/xrc-packlock-rootcause-2026-09-19.md）：
+// 锁状态函数 sub_100919E5C 内的两个专属子分支，各自只有唯一调用方（锁态函数自身），
+// 入口直返 0x0101010101（b0..b4 = PST/PRS/FTR/BYD/INS 全解锁）即可对齐显示；开关 = unlock_all。
+//   · 0x991508 = FV 五曲 fast path（入口 STP X20,X19,[SP,#-0x20]!；重放安全）
+//   · 0xAAE50C = DO(konzetsu) 分支（入口 SUB SP,#0xD0；重放安全）
+#define XRC_BRK_LOCK_FV_SITE_OFF        (0x991508ULL)
+#define XRC_BRK_LOCK_FV_REPLAY_OFF      (0x1468100ULL)
+#define XRC_BRK_LOCK_DO_SITE_OFF        (0xAAE50CULL)
+#define XRC_BRK_LOCK_DO_REPLAY_OFF      (0x1468108ULL)
 // 自动演奏站点处理器引用的 7.0 布局常量（出处同上：D9A0/CBB0 反汇编 + vtable 符号表）。
 #define XRC_NOTE_TIME_END_OFF       28            // note+0x1C = 窗口时刻（判定 pass 两处 CMP 的依据；
                                                   // 注：旧记录"note+28=判定类型"来自别的对象，已修正）

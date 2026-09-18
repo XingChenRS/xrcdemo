@@ -113,6 +113,12 @@ BRK_HOOKS = [
     # 量化"引擎自己发了多少 tick 判定"（对账物量/分数 vs 原谱）。
     ("ap_tickcnt1",      0x10091DCBC, 0x1014680F0, "fa0300aa"),  # MOV X26,X0（helper1=sub_10091E878 返回后，Pure tick 数）
     ("ap_tickcnt2",      0x10091DDBC, 0x1014680F8, "fa0300aa"),  # MOV X26,X0（helper2=sub_10091E958 返回后，Lost tick 数）
+    # ---- 曲目锁态覆盖（v2.6；取证 research/notes/xrc-packlock-rootcause-2026-09-19.md）----
+    # 锁状态函数 sub_100919E5C 的两个专属子分支（各自唯一调用方=锁态函数自身）：
+    #   FV 五曲 fast path / DO(konzetsu) 分支。入口直返 0x0101010101（五难度类全解锁）；
+    #   开关 unlock_all 关时重放原指令走原路径。两处入口指令均 SP 相对、重放安全。
+    ("lock_fv",          0x100991508, 0x101468100, "f44fbea9"),  # STP X20,X19,[SP,#-0x20]!（FV 五曲 fast path 入口）
+    ("lock_do",          0x100AAE50C, 0x101468108, "ff4303d1"),  # SUB SP,#0xD0（DO/konzetsu 分支入口）
 ]
 
 # ---- 门禁静态补丁（形态 0；7.0.255 重定位 2026-09-18，注入即生效，可 --no-gates 关闭）----
@@ -129,6 +135,14 @@ GATE_PATCHES = [
     #   下载态随 cb 预置内容判"就绪"。两处分别是状态查询与可玩性捷径。）：
     ("byd_state_mode",    0x100844830, "5f0c0071", "5fbc0071"),  # sub_100844774：CMP W2,#3 → #0x2F
     ("byd_playable_hint", 0x10084EC7C, "9f0e0071", "9fbe0071"),  # sub_10084EC30：CMP W20,#3 → #0x2F
+    # 下载态"就绪"钉死（2026-09-19 取证：research/notes/xrc-download-state-rootcause-2026-09-19.md）：
+    # sub_100844774 的真值是 mgr(Game+0x88) 内存表，表由服务器清单响应/CB 完成回调/dl 目录扫描
+    # 三处写入；三处门禁补丁只改"查哪些文件名"、不改表的空否。下面两条把该函数两个非零出口
+    # （1=需要下载 / 2=可更新）都钉成 0=就绪——对自持内容的场景即"离线内容一律视为已就绪"。
+    # 副作用：全 App 的下载/更新提示不再出现（启动键 img/download.png、Download song? 弹窗等）；
+    #         真缺谱面时的开局 throw（sub_100CA118C）链路不受影响。
+    ("dl_state_ready_a",  0x100844954, "13119f1a", "13008052"),  # CSEL W19,W8,WZR,NE → MOV W19,#0（出口"2"）
+    ("dl_state_ready_b",  0x100844964, "33008052", "13008052"),  # MOV W19,#1       → MOV W19,#0（出口"1"）
 ]
 # 重放跳板必须避免 PC 相关指令（ADRP/ADR/B/BL/CBZ/TBZ/LDR-literal）——
 # 跳板在别处执行，PC 相对寻址会算错。这里只做"显然安全"的粗筛并提示。
