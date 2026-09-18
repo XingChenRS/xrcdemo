@@ -511,6 +511,18 @@ int xrc_plugin_main(const xrc_host_t *host) {
             host->log("→ login_open: 外层无此符号（需重新注入新外层）");
         }
     }
+    // 自动演奏（功能账 §5）：策略驱动
+    v = 0;
+    if (pol && pol_get_num(pol, "autoplay", &v)) {
+        void (*set_ap)(bool) =
+            (void (*)(bool))dlsym(RTLD_DEFAULT, "xrc_judge_set_autoplay");
+        if (set_ap) {
+            set_ap(v == 1);
+            host->log("→ autoplay = %lld", v);
+        } else {
+            host->log("→ autoplay: 外层无此符号（需重新注入新外层）");
+        }
+    }
     // 观察：四桩命中统计（unlock_l1/l2/l3/story_gate 是否在跑）
     v = 0;
     if (pol && pol_get_num(pol, "unlock_stats", &v) && v == 1) {

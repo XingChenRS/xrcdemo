@@ -23,3 +23,8 @@ void xrc_judge_log_stats(void);
 
 // 桩点是否真正激活（未打桩/未注册时为 false → UI 灰掉改判区）。
 bool xrc_judge_is_active(void);
+
+// 自动演奏（默认关）：一切判定（含漏扫 ts=-1 直调）强制 Pure 出口。
+// 依据：漏扫（sub_10091F688 内，note时间+120ms 触发、ts=-1）同样流经本 handler。
+void xrc_judge_set_autoplay(bool on);
+bool xrc_judge_autoplay(void);

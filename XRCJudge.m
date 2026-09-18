@@ -55,6 +55,7 @@ static xrc_commit_ln_t s_commit_ln = NULL;   // = image_base + XRC_OFF_JUDGE_COM
 // 阈值（ms），UI 四档写入（顺序 Pure/Far/Lost/Miss → 写入时映射，见 set_windows）
 static _Atomic(int) s_th[4] = {25, 50, 100, 120};
 static _Atomic(float) s_window_scale = 1.0f;
+static _Atomic(bool)  s_autoplay = false;   // 开：一切判定强制 Pure（含漏扫 ts=-1）
 static _Atomic(uint32_t) s_call_total = 0;
 static _Atomic(uint32_t) s_stat_pure = 0, s_stat_far = 0, s_stat_lost = 0,
                          s_stat_ln = 0, s_stat_miss = 0, s_stat_gated = 0;
@@ -109,6 +110,24 @@ static uint64_t s_xrc_judge_handler(uint64_t ng, uint64_t note, int64_t ts, uint
         int32_t w4 = (cur - base) + lead2;
         dirv = (uint32_t)w4;
         dir = (w4 >= note_ms) ? 2 : 1;
+    }
+
+    // ---- 2.5 自动演奏（autoplay）：一切判定（含漏扫 ts=-1）强制 Pure ----
+    // 关键事实（2026-09-18 IDA 实证）：未被触摸的音符由漏扫 sub_10091F688 在
+    // note时间+120ms 处以 ts=-1 直调判定核 —— 亦即同样流经本 handler。
+    // 故 autoplay 无需任何新桩：本出口 = 全谱 Pure。ts 原样透传（与游戏自身
+    // sweep 调用的参数形态一致）；长条/弧线视觉的"触碰态"模拟见账本 §5 待办。
+    if (atomic_load(&s_autoplay)) {
+        uint64_t stats = rd64(ng + XRC_OFF_JUDGE_COMMIT_OBJ);
+        uint64_t fx    = rd64(ng + XRC_OFF_JUDGE_FX_OBJ);
+        if (s_commit && stats)
+            s_commit(stats, note, 0 /*grade Pure*/, 0 /*dir*/, (uint64_t)ts, a6);
+        if (fx) {
+            uint64_t f1 = rd64(rd64(fx) + 8);
+            if (f1) ((xrc_fx1_t)f1)(fx, note, 0, 0);
+        }
+        atomic_fetch_add(&s_stat_pure, 1);
+        return 1;
     }
 
     // ---- 3. 出口（阈值运行时读；调用对象现场读取）----
@@ -237,3 +256,6 @@ void xrc_judge_get_windows(int *max_ms, int *pure_ms, int *far_ms, int *lost_ms)
     if (far_ms)  *far_ms  = atomic_load(&s_th[2]);
     if (lost_ms) *lost_ms = atomic_load(&s_th[3]);
 }
+
+void xrc_judge_set_autoplay(bool on) { atomic_store(&s_autoplay, on); }
+bool xrc_judge_autoplay(void)        { return atomic_load(&s_autoplay); }

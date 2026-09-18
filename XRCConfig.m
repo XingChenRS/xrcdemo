@@ -57,6 +57,8 @@ static void s_ensure_defaults(NSMutableDictionary *p) {
     if (!p[@"cbBypass"])   p[@"cbBypass"]   = @NO;
     // 登录门守卫开关：默认开启（内容动作不再被"必须在线登录"拦住；关=复刻原行为）
     if (!p[@"loginOpen"])  p[@"loginOpen"]  = @YES;
+    // 自动演奏：默认关闭（开启 = 全谱强制 Pure，练习外勿用）
+    if (!p[@"autoplay"])   p[@"autoplay"]   = @NO;
 }
 
 NSMutableDictionary *xrc_config_dict(void) {
@@ -118,6 +120,7 @@ void xrc_config_load(xrc_config_t *out) {
     out->unlock_all     = [prefs[@"unlockAll"] boolValue];
     out->cb_bypass      = [prefs[@"cbBypass"] boolValue];
     out->login_open     = [prefs[@"loginOpen"] boolValue];
+    out->autoplay       = [prefs[@"autoplay"] boolValue];
 }
 
 void xrc_config_save(const xrc_config_t *c) {
@@ -136,5 +139,6 @@ void xrc_config_save(const xrc_config_t *c) {
     p[@"unlockAll"]     = @(c->unlock_all);
     p[@"cbBypass"]      = @(c->cb_bypass);
     p[@"loginOpen"]     = @(c->login_open);
+    p[@"autoplay"]      = @(c->autoplay);
     xrc_config_write_dict(p);
 }

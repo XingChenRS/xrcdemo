@@ -373,6 +373,16 @@
     [self addSubview:loginBtn];
     y += rowH + gap;
 
+    // ---- 自动演奏（功能账 §5）----
+    // 走现有判定 handler：一切判定（含漏扫 ts=-1）强制 Pure。练习/演示用，默认关。
+    UIButton *apBtn = [self makeButton:@"自动演奏 关" action:@selector(toggleAutoplay)];
+    apBtn.frame = CGRectMake(x0, y, W, rowH);
+    apBtn.tag = 4213;
+    apBtn.titleLabel.font = [UIFont systemFontOfSize:11];
+    [apBtn setTitleColor:[UIColor systemPinkColor] forState:UIControlStateNormal];
+    [self addSubview:apBtn];
+    y += rowH + gap;
+
     // ---- tips（拖拽=跳转；循环 = 设起点→设终点→开循环；到终点自动重建回起点）----
     UILabel *tips = [[UILabel alloc] initWithFrame:CGRectMake(x0, y, W, 14)];
     tips.text = @"拖时间轴=跳转 ｜ 循环: 设起点→设终点→开循环(到终点回到起点; Retry 后也回到起点)";
@@ -526,6 +536,17 @@
     [self refresh];
 }
 
+// 自动演奏（功能账 §5）：开=一切判定强制 Pure（含未触摸音符的漏扫路径）
+- (void)toggleAutoplay {
+    xrc_config_t c; xrc_config_load(&c);
+    c.autoplay = !c.autoplay;
+    xrc_config_save(&c);
+    xrc_judge_set_autoplay(c.autoplay);
+    [WHToast showMessage:c.autoplay ? @"自动演奏 开（全部判定 → Pure）"
+                                    : @"自动演奏 关" duration:1.4 finishHandler:^{}];
+    [self refresh];
+}
+
 // 保存地址（不自动开启；开关单独控制）
 - (void)commitNet {
     UITextField *f = (UITextField *)[self viewWithTag:4201];
@@ -631,6 +652,16 @@
         lgb.backgroundColor = on ? [UIColor colorWithRed:0.6 green:0.1 blue:0.3 alpha:1.0]
                                  : [UIColor colorWithWhite:0.25 alpha:1.0];
         [lgb setTitleColor:on ? [UIColor whiteColor] : [UIColor systemPinkColor]
+                 forState:UIControlStateNormal];
+    }
+    UIButton *apb = (UIButton *)[self viewWithTag:4213];
+    if (apb) {
+        BOOL on = xrc_judge_autoplay();
+        [apb setTitle:(on ? @"自动演奏 开（全部判定 → Pure）" : @"自动演奏 关")
+             forState:UIControlStateNormal];
+        apb.backgroundColor = on ? [UIColor colorWithRed:0.6 green:0.1 blue:0.3 alpha:1.0]
+                                 : [UIColor colorWithWhite:0.25 alpha:1.0];
+        [apb setTitleColor:on ? [UIColor whiteColor] : [UIColor systemPinkColor]
                  forState:UIControlStateNormal];
     }
     [self applyCapabilityGating];

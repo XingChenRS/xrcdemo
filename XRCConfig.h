@@ -23,6 +23,8 @@ typedef struct {
     BOOL      cb_bypass;    // 开：cb 就绪恒真 + 全树校验/更新错码分发跳过
     // ---- 登录门守卫开关（功能账 §1.4）----
     BOOL      login_open;   // 开（默认）：解锁/领奖/联机不再要求"在线登录"（BRK 桩落穿）
+    // ---- 自动演奏（功能账 §5）----
+    BOOL      autoplay;     // 开（默认关）：一切判定强制 Pure（含漏扫 ts=-1 直调）
 } xrc_config_t;
 
 NSString *xrc_config_path(void);
