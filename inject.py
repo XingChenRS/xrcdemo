@@ -81,6 +81,36 @@ BRK_HOOKS = [
     ("judge112", 0x100184084, 0x1014680A0, "080c40b9"),  # AlterEgoPuzzle 判定
     ("judge108", 0x100183FDC, 0x1014680A8, "f44fbea9"),  # ArghenaStories 判定（STP X20,X19,[SP,#-0x20]!）
 ]
+
+# ---- 门禁静态补丁（形态 0；7.0.255 重定位 2026-09-18，注入即生效，可 --no-gates 关闭）----
+#  A. "必须在线登录"守卫分支 NOP（7 个成员 ×2 分支）——守卫形态：
+#       BL checkA(0x10088F3C8); CBZ W0,<弹窗>; [LDR]; BL checkB(0x10088F3E8); TBZ/CBZ W0,<弹窗>
+#     NOP 掉两条分支后落穿到真实动作分支（解锁/领奖/联机请求照常发起）。
+#     成员：① 记忆源点解锁 ②③④ 任务奖励领取（三入口）⑤⑥⑦ Link Play（三入口）。
+#  B. 离线 BYD 门（sub_10084D708 谱面路径判定）：CMP W20,#3 → #0x2F（imm12 单字段翻转，
+#     与 6.13 已验方案同款）→ BYD 谱面改走标准 songs/<dir>/N.aff 路径，不再走下载式命名。
+# (名称, VA, 原字节 hex, 补丁字节 hex) —— 幂等：已是补丁字节跳过；expect 不符即报错。
+GATE_PATCHES = [
+    # ① sub_100112EC4 记忆源点解锁（"Memories are used to unlock…online and signed in"）
+    ("login_memories_a",  0x100112F4C, "00020034", "1f2003d5"),
+    ("login_memories_b",  0x100112F58, "a0010036", "1f2003d5"),
+    # ②③④ sub_100A8EA74 / sub_100A90C50 / sub_100A91348 任务奖励领取（三入口）
+    ("login_mission_1a",  0x100A8EAE8, "00040034", "1f2003d5"),
+    ("login_mission_1b",  0x100A8EAF4, "a0030036", "1f2003d5"),
+    ("login_mission_2a",  0x100A90CC8, "00040034", "1f2003d5"),
+    ("login_mission_2b",  0x100A90CD4, "a0030036", "1f2003d5"),
+    ("login_mission_3a",  0x100A913BC, "00040034", "1f2003d5"),
+    ("login_mission_3b",  0x100A913C8, "a0030036", "1f2003d5"),
+    # ⑤⑥⑦ sub_100CBB5B0 / sub_100CBBBD8 / sub_100CBCCA4 Link Play（三入口）
+    ("login_linkplay_1a", 0x100CBB5EC, "c0010034", "1f2003d5"),
+    ("login_linkplay_1b", 0x100CBB5F8, "60010034", "1f2003d5"),
+    ("login_linkplay_2a", 0x100CBBC18, "60020034", "1f2003d5"),
+    ("login_linkplay_2b", 0x100CBBC24, "00020034", "1f2003d5"),
+    ("login_linkplay_3a", 0x100CBCD70, "c0010034", "1f2003d5"),
+    ("login_linkplay_3b", 0x100CBCD7C, "60010034", "1f2003d5"),
+    # 离线 BYD 门（6.13 0x1007D1FD5 的 7.0 对应）
+    ("byd_offline_gate",  0x10084D778, "9f0e0071", "9fbe0071"),
+]
 # 重放跳板必须避免 PC 相关指令（ADRP/ADR/B/BL/CBZ/TBZ/LDR-literal）——
 # 跳板在别处执行，PC 相对寻址会算错。这里只做"显然安全"的粗筛并提示。
 _PC_REL_MASK_HINT = (
@@ -259,6 +289,32 @@ def patch_brk_hooks(data: bytearray) -> list[str]:
             f"brk[{name}]: {site_va:#x} -> BRK#0 (orig {orig.hex()}), "
             f"replay @ {replay_va:#x}"
         )
+    return logs
+
+
+def patch_gates(data: bytearray) -> list[str]:
+    """门禁静态补丁：守卫分支 NOP + 离线 BYD 门翻转（就地写，无跳板）。
+
+    幂等：已是补丁字节则跳过；与 expect 不符时报错（防版本漂移）。
+    """
+    logs = []
+    base = fat_arm64_slice_offset(bytes(data))
+    for name, va, expect, patch in GATE_PATCHES:
+        off = base + (va - 0x100000000)
+        want = bytes.fromhex(patch)
+        cur = bytes(data[off:off + len(want)])
+        if len(cur) != len(want):
+            raise RuntimeError(f"gate[{name}]: VA {va:#x} out of range")
+        if cur == want:
+            logs.append(f"gate[{name}]: already patched @ {va:#x}")
+            continue
+        if cur.hex() != expect:
+            raise RuntimeError(
+                f"gate[{name}]: {va:#x} bytes {cur.hex()} != expected {expect}"
+                f" — wrong binary version?"
+            )
+        data[off:off + len(want)] = want
+        logs.append(f"gate[{name}]: {va:#x} {cur.hex()} -> {patch}")
     return logs
 
 
@@ -473,6 +529,20 @@ def check_binary(path: str) -> int:
               f"{'PATCHED' if insn == 0xD4200000 else 'original'}; "
               f"replay {tramp_b.hex() if any(tramp_b) else 'empty'}")
     print(f"dylib LC   : {'@rpath/libxrcdemo.dylib present' if has_dylib else 'MISSING'}")
+    gate_ok = 0
+    for name, va, expect, patch in GATE_PATCHES:
+        gf = base + (va - 0x100000000)
+        want = bytes.fromhex(patch)
+        cur = bytes(raw[gf:gf + len(want)])
+        if cur == want:
+            gate_ok += 1
+            state = "PATCHED"
+        elif cur.hex() == expect:
+            state = "original"
+        else:
+            state = f"UNKNOWN({cur.hex()})"
+        print(f"gate[{name}]: {va:#x} {state}")
+    print(f"gates      : {gate_ok}/{len(GATE_PATCHES)} patched")
     if has_stub and not has_dylib:
         print("=> INVALID: stub without dylib (features would be dead)")
         ok = False
@@ -571,6 +641,17 @@ def main():
             print(f"[!] brk: {e}")
             sys.exit(1)
         print("[i] brk hook patched — re-sign the app before installing")
+
+    # 门禁静态补丁（默认开启；--no-gates 关闭）：离线 BYD 门 + 登录守卫分支。
+    if "--no-gates" not in sys.argv:
+        try:
+            logs = patch_gates(data)
+            for line in logs:
+                print(f"[+] {line}")
+        except RuntimeError as e:
+            print(f"[!] gates: {e}")
+            sys.exit(1)
+        print("[i] gates patched — re-sign the app before installing")
 
     with open(MAIN, "wb") as f:
         f.write(data)
