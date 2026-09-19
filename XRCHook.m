@@ -217,9 +217,6 @@ static void s_lock_all(void *vctx) {
 // 终章链门覆盖（v2.7 BRK 版 + v2.8 sighook 版）：
 // sub_10099156C 是 FV 五曲"锁标 + 开局门"的共同上游（锁态 sub_100991508 与可玩性谓词
 // sub_100919874 都调它）。入口直返 0（未锁）；开关复用 unlock_all。
-// v2.8 起额外用 MSHookFunction 在**函数入口**打钩——这样**不依赖主程序是否含 BRK 站点**，
-// 只换 dylib 即生效（真机多轮证实：注入链路里的主程序常常换不掉）。两版互斥：
-// 站点已是 BRK #0（v2.7 主程序）时跳过 MSHook，避免与重放跳板冲突。
 static void s_finale_gate_open(void *vctx) {
     if (!atomic_load(&s_unlock_all)) return;
     ucontext_t *uc = (ucontext_t *)vctx;
@@ -229,51 +226,6 @@ static void s_finale_gate_open(void *vctx) {
     __darwin_arm_thread_state64_set_pc_fptr(*ss,
         (void *)__darwin_arm_thread_state64_get_lr(*ss));
     atomic_fetch_add(&s_lock_hits, 1);
-}
-
-extern void *MSHookFunction(void *symbol, void *replace, void **result);
-
-typedef int64_t (*xrc_fv_gate_fn)(uint64_t song, uint32_t cls);
-static xrc_fv_gate_fn s_fv_gate_orig = NULL;
-
-static int64_t s_fv_gate_hook(uint64_t song, uint32_t cls) {
-    if (atomic_load(&s_unlock_all)) {
-        atomic_fetch_add(&s_lock_hits, 1);
-        return 0;                       // 未锁（链门放行；FV 五曲可玩、锁标消失）
-    }
-    return s_fv_gate_orig ? s_fv_gate_orig(song, cls) : 0;
-}
-
-// DO(konzetsu) 分支（sub_100AAE50C，唯一调用方=锁态函数）：入口直返"五难度全解锁"。
-// 与 BRK 版（lock_do）互斥：站点已 BRK 时跳过。
-typedef int64_t (*xrc_do_lock_fn)(uint64_t mgr, uint64_t song, uint32_t cls);
-static xrc_do_lock_fn s_do_lock_orig = NULL;
-
-static int64_t s_do_lock_hook(uint64_t mgr, uint64_t song, uint32_t cls) {
-    if (atomic_load(&s_unlock_all)) {
-        atomic_fetch_add(&s_lock_hits, 1);
-        return 0x0000000101010101LL;    // b0..b4 = 1（PST/PRS/FTR/BYD/INS 全解锁）
-    }
-    return s_do_lock_orig ? s_do_lock_orig(mgr, song, cls) : 0;
-}
-
-void xrc_gate_sighook_install(uint64_t mb) {
-    if (!mb) return;
-    struct { const char *name; uint64_t off; void *hook; void **orig; } tab[] = {
-        { "fv_gate", XRC_BRK_FV_GATE_SITE_OFF, (void *)&s_fv_gate_hook, (void **)&s_fv_gate_orig },
-        { "lock_do", XRC_BRK_LOCK_DO_SITE_OFF, (void *)&s_do_lock_hook, (void **)&s_do_lock_orig },
-    };
-    for (size_t i = 0; i < sizeof(tab) / sizeof(tab[0]); i++) {
-        void *site = (void *)(mb + tab[i].off);
-        uint32_t insn = *(volatile uint32_t *)site;
-        if (insn == 0xD4200000u) {
-            xrc_log(@"[hook] %s: BRK site present，跳过 MSHook", tab[i].name);
-            continue;
-        }
-        void *orig = MSHookFunction(site, tab[i].hook, tab[i].orig);
-        xrc_log(@"[hook] %s sighook @%p orig=%p（unlock_all=%d）",
-                tab[i].name, site, orig, (int)atomic_load(&s_unlock_all));
-    }
 }
 
 // ---------------- 登录门守卫开关（功能账 §1.4；no-replay 变体，2026-09-18）----------------
@@ -701,14 +653,12 @@ void xrc_brk_setup(uint64_t image_base) {
         xrc_log(@"[brk] %s slot reg=%d site=%p(insn=%08X patched=%d) replay=%p",
                 e->name, ok, (void *)site, insn, patched, (void *)replay);
     }
-    // v2.8：终章链门 additionally 用 MSHookFunction 在函数入口打钩——不依赖主程序含 BRK 站点。
-    @try { xrc_gate_sighook_install(image_base); } @catch (NSException *e) { xrc_log(@"[hook] fv_gate EX: %@", e); }
     // 标记串（inject.py 用它在 dylib 里核对"登录门 no-replay 桩支持"是否在场；
     // 旧 dylib + 新桩表混用会在守卫首命中时链默认处理器 → 崩，注入脚本据此拒配）。
     xrc_log(@"[brk] login-guard v1 ready (login_open=%d, slots=%d)",
             (int)atomic_load(&s_login_open), atomic_load(&s_count));
     // 同款配对标记：自动演奏站点（ap_*）由本 dylib 处理；旧 dylib 无此表 → 注入脚本拒配。
-    xrc_log(@"[brk] autoplay-eve v1 ready (v2.8 mark=arc-consume/hold-held + lock/finale-gate(sighook); autoplay=%d)", (int)xrc_judge_autoplay());
+    xrc_log(@"[brk] autoplay-eve v1 ready (v2.9 mark=arc-consume/hold-held + lock/finale-gate; autoplay=%d)", (int)xrc_judge_autoplay());
     xrc_brk_capture_enable(true);
 }
 
