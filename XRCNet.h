@@ -26,3 +26,4 @@ bool   xrc_net_enabled(void);
 // 统计
 unsigned long long xrc_net_requests(void);
 unsigned long long xrc_net_rewritten(void);
+uint32_t xrc_net_redirects(void);   // 被改写的 302 跟跳次数（v2.12）

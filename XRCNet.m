@@ -235,6 +235,53 @@ static void s_swizzle_result_logging(void) {
     }
 }
 
+// ---------------- 302 / 重定向支持（v2.12）----------------
+// 事实：`HttpAsynConnection` **没有实现** `connection:willSendRequest:redirectResponse:`
+//   （IDB 里只有 didReceiveResponse / didFailWithError / willSendRequestForAuthenticationChallenge）
+//   ⇒ NSURLConnection 遇到 302 时**自己在内部**按 Location 发起下一跳，新请求**不经过**
+//   `initWithRequest:` 的改写 ✗ —— 这正是"服务器 302 到 CDN 后下载失败"的机制。
+// 修法：用 `class_addMethod` 给该委托类**补上**这个回调，把系统提出的"下一跳请求"过一遍
+//   `s_rewrite`；命中白名单就改写、否则**原样返回**（= 系统默认行为，零副作用）。
+//   未命中白名单时额外打一行提示（点名该把哪个主机加进 netMatch），便于线上服务器排障。
+static _Atomic(uint32_t) s_redirected = 0;
+uint32_t xrc_net_redirects(void) { return atomic_load(&s_redirected); }
+
+static NSURLRequest *s_will_send(id self_, SEL _cmd, NSURLConnection *c,
+                                 NSURLRequest *req, NSURLResponse *resp) {
+    @try {
+        if (req && atomic_load(&s_enabled)) {
+            NSURL *nu = s_rewrite(req.URL);
+            if (nu) {
+                NSMutableURLRequest *m = [req mutableCopy];
+                m.URL = nu;
+                atomic_fetch_add(&s_redirected, 1);
+                xrc_log(@"[net] 302 → %@ (host %@ → %@)",
+                        req.URL.path, req.URL.host, nu.host);
+                return m;
+            }
+            if (req.URL.host) {
+                xrc_log(@"[net] 302 → %@ host=%@ **不在改写名单**（如需劫持请加入 netMatch）",
+                        req.URL.path, req.URL.host);
+            }
+        }
+    } @catch (NSException *e) {
+        xrc_log(@"[net] redirect EX: %@", e);
+    }
+    return req;
+}
+
+static void s_install_redirect_hook(void) {
+    Class hc = objc_getClass("HttpAsynConnection");
+    if (!hc) { xrc_log(@"[net] HttpAsynConnection absent; redirect hook skipped"); return; }
+    SEL rs = @selector(connection:willSendRequest:redirectResponse:);
+    if (class_getInstanceMethod(hc, rs)) {
+        xrc_log(@"[net] redirect hook: 已有实现，跳过（不改行为）");
+        return;
+    }
+    BOOL ok = class_addMethod(hc, rs, (IMP)s_will_send, "@@:@@@");
+    xrc_log(@"[net] redirect hook added=%d (302 跟跳将走同一套改写)", (int)ok);
+}
+
 void xrc_net_install(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
@@ -248,5 +295,6 @@ void xrc_net_install(void) {
         method_setImplementation(m, (IMP)s_init_with_request);
         xrc_log(@"[net] installed (match=%@)", [s_match componentsJoinedByString:@","]);
         s_swizzle_result_logging();
+        s_install_redirect_hook();
     });
 }

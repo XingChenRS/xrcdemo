@@ -179,7 +179,7 @@
 // 出处: research/notes/xrc-feature-hooks-ledger-2026-09-14.md §1.1（2026-09-14 重定位）。
 // 逐字节对照（vs 6.13.10）：层1 全等；层2 仅 8 处 BL 目标重定位（22B 差）；层3 仅 BL 目标；
 // 故事门重编译（47B 差，序言 16B 全等，尾 = return 层1查表(bool)）。
-// 语义：开关（xrc_brk_set_unlock_all）置真 → handler 强制 `x0=1; PC=LR` 直返；
+// 语义：开关（xrc_brk_set_unlock_own，v2.12 拆分自 unlockAll）置真 → handler 强制 `x0=1; PC=LR` 直返；
 // 置假 → 走重放跳板，行为与未注入完全一致。
 #define XRC_BRK_UNLOCK_L1_SITE_OFF   (0xBE46ACULL)  // 层1 第 2 条指令（首条 CBZ X1 是
                                                     // PC 相关指令、不可重放；本条 LDR 安全）
@@ -188,8 +188,6 @@
 #define XRC_BRK_UNLOCK_L2_REPLAY_OFF (0x1468060ULL)
 #define XRC_BRK_UNLOCK_L3_SITE_OFF   (0xBE4D38ULL)  // 层3 入口（STP X29,X30,[SP,#-0x10]!）
 #define XRC_BRK_UNLOCK_L3_REPLAY_OFF (0x1468068ULL)
-#define XRC_BRK_STORY_SITE_OFF       (0x9346E0ULL)  // 故事门入口（SUB SP,SP,#0x70；返回 bool）
-#define XRC_BRK_STORY_REPLAY_OFF     (0x1468070ULL)
 
 // ---------------- BRK 桩：cb 验证链（可开关，功能账 §3）----------------
 // 出处: research/notes/xrc-feature-hooks-ledger-2026-09-14.md §3（2026-09-14 重定位，
@@ -203,40 +201,6 @@
 #define XRC_BRK_CB_VERIFY_REPLAY_OFF (0x1468080ULL)
 #define XRC_BRK_CB_DISPATCH_SITE_OFF (0x13C5E8ULL)  // 更新错码分发入口（SUB SP,SP,#0x100）
 #define XRC_BRK_CB_DISPATCH_REPLAY_OFF (0x1468088ULL)
-
-// ---------------- BRK 桩：解锁条件"内部计数"判定（功能账 §1.2，2026-09-14 定位）----------------
-// 出处: 子代理定位（vtable 槽1 反推；判定函数→data xref→vtable）。
-// 这四类条件的判定不读 un（内部计数器/故事节点），un 派发生效不了——是"硬编码门"本体。
-// 统一挂 unlock_all 开关：置真 → 判定恒真（w0=1 直返）。
-#define XRC_BRK_JUDGE107_SITE_OFF    (0xAB300CULL)  // SpellMagnolia: *(int*)(x0+8) > 7（0x10）
-#define XRC_BRK_JUDGE107_REPLAY_OFF  (0x1468090ULL)
-#define XRC_BRK_JUDGE110_SITE_OFF    (0x184064ULL)  // ArghenaCourse: *(int*)(x0+0xC) > 199999（0x18）
-#define XRC_BRK_JUDGE110_REPLAY_OFF  (0x1468098ULL)
-#define XRC_BRK_JUDGE112_SITE_OFF    (0x184084ULL)  // AlterEgoPuzzle: >998 || (Game+192)==4（0x34）
-#define XRC_BRK_JUDGE112_REPLAY_OFF  (0x14680A0ULL)
-#define XRC_BRK_JUDGE108_SITE_OFF    (0x183FDCULL)  // ArghenaStories: 节点(15,6)&&(16,6) 激活（0x74）
-#define XRC_BRK_JUDGE108_REPLAY_OFF  (0x14680A8ULL)
-
-// ---------------- BRK 桩：登录门守卫（no-replay 变体；功能账 §1.4，2026-09-18 定位）----------------
-// 14 个守卫站点 = 7 个动作入口 × 2 条分支（记忆源点解锁×1 / 任务奖励×3 / Link Play×3）。
-// 分支本体是 CBZ/TBZ（PC 相对指令）→ **不能走重放跳板**（换址执行会算错目标）。
-// 处理器 s_login_guard 自判：破点命中时 W0 = 紧邻的 BL checkA(0x88F3C8)/checkB(0x88F3E8) 返回值
-// （逐站点核实 15/15 都判 W0）。login_open 真 → 永不走弹窗（落穿真实动作）；假 → 复刻原分支语义。
-// 开关：xrc_brk_set_login_open（plist loginOpen / 策略 login_open；默认真）。replay 槽位不用（=0）。
-#define XRC_BRK_LOGIN_MEM_A_SITE_OFF      (0x112F4CULL) // 记忆源点 A（CBZ W0；目标 0x112F8C）
-#define XRC_BRK_LOGIN_MEM_B_SITE_OFF      (0x112F58ULL) // 记忆源点 B（TBZ W0,#0）
-#define XRC_BRK_LOGIN_MISSION1_A_SITE_OFF (0xA8EAE8ULL) // 任务奖励① A（CBZ W0；目标 0xA8EB68）
-#define XRC_BRK_LOGIN_MISSION1_B_SITE_OFF (0xA8EAF4ULL) // 任务奖励① B（TBZ W0,#0）
-#define XRC_BRK_LOGIN_MISSION2_A_SITE_OFF (0xA90CC8ULL) // 任务奖励② A（CBZ W0；目标 0xA90D48）
-#define XRC_BRK_LOGIN_MISSION2_B_SITE_OFF (0xA90CD4ULL) // 任务奖励② B（TBZ W0,#0）
-#define XRC_BRK_LOGIN_MISSION3_A_SITE_OFF (0xA913BCULL) // 任务奖励③ A（CBZ W0；目标 0xA9143C）
-#define XRC_BRK_LOGIN_MISSION3_B_SITE_OFF (0xA913C8ULL) // 任务奖励③ B（TBZ W0,#0）
-#define XRC_BRK_LOGIN_LINKPLAY1_A_SITE_OFF (0xCBB5ECULL)// Link Play① A（CBZ W0；目标 0xCBB624）
-#define XRC_BRK_LOGIN_LINKPLAY1_B_SITE_OFF (0xCBB5F8ULL)// Link Play① B（CBZ W0）
-#define XRC_BRK_LOGIN_LINKPLAY2_A_SITE_OFF (0xCBBC18ULL)// Link Play② A（CBZ W0；目标 0xCBBC64）
-#define XRC_BRK_LOGIN_LINKPLAY2_B_SITE_OFF (0xCBBC24ULL)// Link Play② B（CBZ W0）
-#define XRC_BRK_LOGIN_LINKPLAY3_A_SITE_OFF (0xCBCD70ULL)// Link Play③ A（CBZ W0；目标 0xCBCDA8）
-#define XRC_BRK_LOGIN_LINKPLAY3_B_SITE_OFF (0xCBCD7CULL)// Link Play③ B（CBZ W0）
 
 // ---------------- BRK 桩：自动演奏（eve 全量对齐；功能账 §5.2，2026-09-18 定位）----------------
 // 出处: eve 实件（Downloads/arceve_x，其二进制为 BRK 就地打桩 + handler 反编译转储）
@@ -276,7 +240,7 @@
 #define XRC_BRK_AP_TICKCNT2_REPLAY_OFF  (0x14680F8ULL)
 // v2.6 曲目锁态覆盖站点（取证 research/notes/xrc-packlock-rootcause-2026-09-19.md）：
 // 锁状态函数 sub_100919E5C 内的两个专属子分支，各自只有唯一调用方（锁态函数自身），
-// 入口直返 0x0101010101（b0..b4 = PST/PRS/FTR/BYD/INS 全解锁）即可对齐显示；开关 = unlock_all。
+// 入口直返 0x0101010101（b0..b4 = PST/PRS/FTR/BYD/INS 全解锁）即可对齐显示；开关 = unlockFv / unlockDo（v2.12 拆分）。
 //   · 0x991508 = FV 五曲 fast path（入口 STP X20,X19,[SP,#-0x20]!；重放安全）
 //   · 0xAAE50C = DO(konzetsu) 分支（入口 SUB SP,#0xD0；重放安全）
 #define XRC_BRK_LOCK_FV_SITE_OFF        (0x991508ULL)
@@ -286,7 +250,7 @@
 // v2.7 终章链门覆盖：sub_10099156C 是 FV 五曲"锁标 + 开局门"的**共同上游**——
 //   锁态函数 sub_100991508 与可玩性谓词 sub_100919874（选曲 cell / Play 门）都调它；
 //   未推进终章链时返回 1 = 锁 → 既显示锁标也挡住 start。
-//   入口直返 0（未锁）；开关 = unlock_all。入口指令 SUB SP,#0xC0，重放安全。
+//   入口直返 **1（放行）**（v2.11 极性修正，0 是锁）；开关 = gateOpen。入口指令 SUB SP,#0xC0，重放安全。
 #define XRC_BRK_FV_GATE_SITE_OFF        (0x99156CULL)
 #define XRC_BRK_FV_GATE_REPLAY_OFF      (0x1468110ULL)
 // v2.10 链进度覆盖（2026-09-19，取证 research/notes/xrc-chain-regression-6.13-vs-7.0-2026-09-19.md）：
@@ -297,7 +261,7 @@
 //   （实测崩溃链 sub_100CA118C → sub_10018A3A8 → sub_10098F5BC → sub_10098FB1C）。
 //   6.13 无此系统（balor/cataclysmcry/konzetsu 字面量全无）→ 该崩因是 7.0 回归。
 //   入口直返 100（= 该函数自身"无场景对象"路径的合法进度值）→ 不再查表（改名/挪包均安全），
-//   并令 sub_10099156C 的 v19=(98FB1C==0) 恒 0 = 可玩。开关复用 unlock_all。
+//   并令 sub_10099156C 的 v19=(98FB1C==0) 恒 0 = 可玩。**不设开关**（守崩桩，恒开）。
 //   入口指令 SUB SP,#0xB0（重放安全）；配对标记 "chain-guard v1"。
 #define XRC_BRK_CHAIN_PROG_SITE_OFF     (0x98FB1CULL)
 #define XRC_BRK_CHAIN_PROG_REPLAY_OFF   (0x1468118ULL)

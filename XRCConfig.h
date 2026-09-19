@@ -17,12 +17,13 @@ typedef struct {
     BOOL      net_enabled;  // 是否改写 API 请求指向自有服务端
     NSString *net_base;     // 目标 base，如 http://192.168.1.10:8080
     NSString *net_match;    // 需改写的 host（逗号分隔）；空 = 内置默认
-    // ---- 拥有/解锁链开关（功能账 §1）----
-    BOOL      unlock_all;   // 开：拥有链三层 + 故事门强制返回真（可控内容门）
+    // ---- 开关组（功能账 §1；v2.12 由原 unlockAll 一拆四）----
+    BOOL      unlock_own;   // 拥有链三层（unlock_l1/l2/l3；服务器已全授予时在线冗余）
+    BOOL      unlock_fv;    // FV 五曲 fast path → 五难度全解
+    BOOL      unlock_do;    // DO(konzetsu) 分支 → 五难度全解
+    BOOL      gate_open;    // 终章链门：1 = 放行（决定整表是否解锁）
     // ---- cb 验证链开关（功能账 §3）----
     BOOL      cb_bypass;    // 开：cb 就绪恒真 + 全树校验/更新错码分发跳过
-    // ---- 登录门守卫开关（功能账 §1.4）----
-    BOOL      login_open;   // 开（默认）：解锁/领奖/联机不再要求"在线登录"（BRK 桩落穿）
     // ---- 自动演奏（功能账 §5）----
     BOOL      autoplay;     // 开（默认关）：一切判定强制 Pure（含漏扫 ts=-1 直调）
 } xrc_config_t;

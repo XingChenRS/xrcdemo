@@ -202,14 +202,17 @@ static void doBootstrap(void) {
         // BRK 桩：验证形态（见 XRCProfile.h）。处理器已在 %ctor 装好，这里只注册桩点。
         @try { xrc_brk_setup(base); }           @catch (NSException *e) { xrc_log(@"brk EX: %@", e); }
         // 拥有/解锁链开关（功能账 §1）：配置项，默认关；打开后四桩强制"拥有=真"
-        @try { xrc_brk_set_unlock_all(g_cfg.unlock_all); }
-        @catch (NSException *e) { xrc_log(@"unlock flag EX: %@", e); }
+        @try {
+            xrc_brk_set_unlock_own(g_cfg.unlock_own);
+            xrc_brk_set_unlock_fv(g_cfg.unlock_fv);
+            xrc_brk_set_unlock_do(g_cfg.unlock_do);
+            xrc_brk_set_gate_open(g_cfg.gate_open);
+        }
+        @catch (NSException *e) { xrc_log(@"unlock flags EX: %@", e); }
         // cb 验证链开关（功能账 §3）：默认关；打开后就绪恒真+校验/错码分发跳过
         @try { xrc_brk_set_cb_bypass(g_cfg.cb_bypass); }
         @catch (NSException *e) { xrc_log(@"cb flag EX: %@", e); }
         // 登录门守卫开关（功能账 §1.4）：默认开；开=解锁/领奖/联机不再弹"必须在线登录"
-        @try { xrc_brk_set_login_open(g_cfg.login_open); }
-        @catch (NSException *e) { xrc_log(@"login flag EX: %@", e); }
         // 自动演奏（功能账 §5）：默认关；开=一切判定强制 Pure（走现有判定 handler）
         @try { xrc_judge_set_autoplay(g_cfg.autoplay); }
         @catch (NSException *e) { xrc_log(@"autoplay flag EX: %@", e); }

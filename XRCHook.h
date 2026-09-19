@@ -26,20 +26,26 @@ void xrc_brk_setup(uint64_t image_base);
 // 注册与处理器安装必须同刻——启动极早期就命中的桩（如 cb 校验）等不到 didFinishLaunching。
 void xrc_brk_setup_early(void);
 
-// ---- 拥有/解锁链开关（功能账 §1）----
-// 置真后 unlock_l1/l2/l3 + story_gate 四桩的 handler 强制 `x0=1; PC=LR` 直返；
+// ---- 开关组（功能账 §1；v2.12 由原 unlockAll 一拆四）----
+// 置真后对应桩的 handler 强制 `x0=` 直返（直返语义见 XRCHook.m 注释）；
 // 置假恢复原行为（重放跳板）。async-signal-safe：处理器只做原子读。
-void xrc_brk_set_unlock_all(bool on);
-bool xrc_brk_unlock_all(void);
+//   own  → unlock_l1/l2/l3（拥有链）
+//   fv   → lock_fv（FV 五曲 fast path → 五难度全解）
+//   do   → lock_do（DO/konzetsu 分支）
+//   gate → fv_gate（终章链门；1 = 放行，决定整表是否解锁）
+void xrc_brk_set_unlock_own(bool on);
+void xrc_brk_set_unlock_fv(bool on);
+void xrc_brk_set_unlock_do(bool on);
+void xrc_brk_set_gate_open(bool on);
+bool xrc_brk_unlock_own(void);
+bool xrc_brk_unlock_fv(void);
+bool xrc_brk_unlock_do(void);
+bool xrc_brk_gate_open(void);
 
 // ---- cb 验证链开关（功能账 §3）----
 // 置真后 cb_ready 恒真、cb_verify/cb_dispatch 整体跳过（改谱面/cb 自由化）。
 void xrc_brk_set_cb_bypass(bool on);
 bool xrc_brk_cb_bypass(void);
-
-// 登录门守卫开关（功能账 §1.4；no-replay 桩，处理器自判分支）
-void xrc_brk_set_login_open(bool on);
-bool xrc_brk_login_open(void);
 
 // 统计（异步写入，主线程读；供定时器落日志）
 uint32_t    xrc_brk_hits(int slot_index);

@@ -143,22 +143,43 @@ static void s_applog_blob_capture(void *vctx) {
     atomic_fetch_add(&s_cap2_seq, 1);
 }
 
-// ---------------- 拥有/解锁链开关（功能账 §1）----------------
-// 四个"谓词桩"（层1/2/3 + 故事门）共用：开关真 → x0=1、PC=LR 直返（函数体不执行，
-// 栈帧未建立，LR 直返安全）；开关假 → 不动 PC，由分发器送回重放跳板 = 原行为。
-static _Atomic(bool) s_unlock_all = false;
-
-void xrc_brk_set_unlock_all(bool on) { atomic_store(&s_unlock_all, on); }
-bool xrc_brk_unlock_all(void)        { return atomic_load(&s_unlock_all); }
-
-static void s_unlock_force_true(void *vctx) {
-    if (!atomic_load(&s_unlock_all)) return;
+// ---------------- 开关组：拥有链 + 锁态/链门（功能账 §1；v2.12 拆分）----------------
+// 直返桩通用出口：写 x0 = val、PC = LR（函数体不执行、栈帧未建立，直返安全），并计数。
+static _Atomic(uint32_t) s_lock_hits = 0;
+uint32_t xrc_brk_lock_hits(void) { return atomic_load(&s_lock_hits); }
+static void s_ret(uint64_t val, void *vctx) {
     ucontext_t *uc = (ucontext_t *)vctx;
     if (!uc || !uc->uc_mcontext) return;
     __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
-    ss->__x[0] = 1;
+    ss->__x[0] = val;
     __darwin_arm_thread_state64_set_pc_fptr(*ss,
         (void *)__darwin_arm_thread_state64_get_lr(*ss));
+    atomic_fetch_add(&s_lock_hits, 1);
+}
+
+// 四个独立开关（原 `unlockAll` 一拆四，2026-09-19 定稿）：
+//   own  → unlock_l1/l2/l3（拥有链；服务器已全授予时在线冗余，留作离线用）
+//   fv   → lock_fv（FV 五曲 fast path → 五难度全解）
+//   do   → lock_do（DO/konzetsu 分支 → 同上）
+//   gate → fv_gate（终章链门；**1 = 放行**，决定整表是否解锁）
+// 另有 chain_prog（守崩桩）**不设开关、恒生效**，见下。
+static _Atomic(bool) s_unlock_own = false;
+static _Atomic(bool) s_unlock_fv  = false;
+static _Atomic(bool) s_unlock_do  = false;
+static _Atomic(bool) s_gate_open  = false;
+
+void xrc_brk_set_unlock_own(bool on) { atomic_store(&s_unlock_own, on); }
+void xrc_brk_set_unlock_fv(bool on)  { atomic_store(&s_unlock_fv, on); }
+void xrc_brk_set_unlock_do(bool on)  { atomic_store(&s_unlock_do, on); }
+void xrc_brk_set_gate_open(bool on)  { atomic_store(&s_gate_open, on); }
+bool xrc_brk_unlock_own(void) { return atomic_load(&s_unlock_own); }
+bool xrc_brk_unlock_fv(void)  { return atomic_load(&s_unlock_fv); }
+bool xrc_brk_unlock_do(void)  { return atomic_load(&s_unlock_do); }
+bool xrc_brk_gate_open(void)  { return atomic_load(&s_gate_open); }
+
+static void s_unlock_force_true(void *vctx) {     // unlock_l1/l2/l3 共用
+    if (!atomic_load(&s_unlock_own)) return;
+    s_ret(1, vctx);
 }
 
 // ---------------- cb 验证链开关（功能账 §3）----------------
@@ -188,129 +209,45 @@ static void s_cb_skip_void(void *vctx) {
         (void *)__darwin_arm_thread_state64_get_lr(*ss));
 }
 
-// ---------------- 曲目锁态覆盖（v2.6；取证 research/notes/xrc-packlock-rootcause-2026-09-19.md）----------------
-// 锁状态函数 sub_100919E5C 内两个专属子分支，各自只有一个调用方（都是锁态函数自身）：
-//   · 0x100991508 = FV 五曲 fast path（硬编码集合 {infinitestrife,worldender,pentiment,arcanaeden,testify}
-//     经 song+0x257 开关）——改名后其 "finale"/"epilogue" 字符串门失效 → 落存档位图 → 整曲显示锁定；
-//   · 0x100AAE50C = DO(konzetsu) 分支——读存档 insightPrechallengeRevealIndex，未推进时返回
-//     FTR+INS 可玩、其余锁（"显示锁定但 FTR 能打"即此）。
-// 两个函数都返回"六字节打包"的按难度解锁位（b0..b4 = PST/PRS/FTR/BYD/INS，1=可玩）。
-// 入口直接返回 0x0101010101 即可让显示一致地全解锁；开关复用 unlock_all（默认开），关时走原路径。
-static _Atomic(uint32_t) s_lock_hits = 0;
-uint32_t xrc_brk_lock_hits(void) { return atomic_load(&s_lock_hits); }
-
-static void s_lock_all(void *vctx) {
-    if (!atomic_load(&s_unlock_all)) return;   // 未开：不动 PC，分发器重放原指令
-    ucontext_t *uc = (ucontext_t *)vctx;
-    if (!uc || !uc->uc_mcontext) return;
-    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
-    ss->__x[0] = 0x0000000101010101ULL;        // b0..b4 = 1（五难度类全解锁；b5 恒 0）
-    __darwin_arm_thread_state64_set_pc_fptr(*ss,
-        (void *)__darwin_arm_thread_state64_get_lr(*ss));
-    atomic_fetch_add(&s_lock_hits, 1);
+// ---------------- 曲目锁态覆盖（v2.6 建；v2.11 极性修正；v2.12 拆开关）----------------
+// 锁状态函数 `sub_100919E5C` 内的两个专属子分支（各自唯一调用方 = 锁态函数自身）：
+//   · 0x100991508 = FV 五曲 fast path（硬编码集合经 song+0x257 开关；id 改名后该路不再命中）；
+//   · 0x100AAE50C = DO(konzetsu) 分支（读存档 insightPrechallengeRevealIndex；未推进时只放行 FTR/INS）。
+// 二者都返回"五字节打包"的按难度解锁位（b0..b4 = PST/PRS/FTR/BYD/INS，**1 = 可玩**）→
+// 直返 `0x0101010101` = 五难度全解。
+// ⚠ DO 专属曲绘与 b4 的冲突（2026-09-19 实测）：`sub_10084EE7C` 里"包==konzetsu 且锁态 b4 置位
+//   → 用 img/jacket_locked_konzetsu.jpg"。五字节全置 1 会让 DO 曲显示那张专属曲绘（**是曲绘、
+//   不是挂锁**，可玩性不受影响）；反之让 b4=0 保普通曲绘，则 cell 的"全 1 才算解锁"判据失败 →
+//   挂锁回来。二者共用 b4，**不可兼得**，现取"无挂锁 + 专属曲绘"。
+static void s_lock_fv(void *vctx) {
+    if (!atomic_load(&s_unlock_fv)) return;
+    s_ret(0x0000000101010101ULL, vctx);
+}
+static void s_lock_do(void *vctx) {
+    if (!atomic_load(&s_unlock_do)) return;
+    s_ret(0x0000000101010101ULL, vctx);
 }
 
-// 终章链门覆盖（v2.7）：sub_10099156C 是 FV 五曲"锁标 + 开局门"的共同上游——锁态函数
-// sub_100991508 与可玩性谓词 sub_100919874（选曲 cell / Play 门）都调它；终章链未推进时
-// 返回 1=锁 → 既显示锁标也挡住 start（DO 之所以能 start：其链字节放行 FTR/INS）。
-// 入口直返 0（未锁）；开关复用 unlock_all，关时重放原指令走原路径。
-// 终章链门覆盖（v2.7 BRK 版；v2.8 曾试 MSHookFunction sighook——实机挂死，已撤回为纯 BRK）：
-// sub_10099156C 是 FV 五曲"锁标 + 开局门"的共同上游（锁态 sub_100991508 与可玩性谓词
-// sub_100919874 都调它）。入口直返 0（未锁）；开关复用 unlock_all。
-// 终章链门覆盖（v2.7 建，v2.11 修正极性）：`sub_10099156C` 返回值语义经两处消费点钉死——
-//   ① `sub_100919874`（可玩性谓词）直返它的值，消费点（sub_1008660F8 `CBNZ W0` → 选中该难度）
-//      证明 **1 = 放行/可玩、0 = 锁**；
-//   ② `sub_100991508`（FV fast path）里 `if (56C & 1) → 返回 0 = 全 0 字节（全锁）`，
-//      与 ① 的编码方向一致（字节 1 = 解锁，见 sub_1008660F8 的 bics/tbz 判据）。
-//   ⇒ 覆盖必须返回 **1**（放行）。v2.7-v2.10 一直返 0（那时设备二进制没有该站点，未暴露）；
-//      v2.10 首次真正生效即把**所有曲**钉成锁 → 全线锁死（2026-09-19 实机复现 + 日志 fv_gate 命中增长）。
-//   入口直返 1；开关复用 unlock_all。
+// 终章链门覆盖（v2.7 建，v2.11 修正极性，v2.12 独立开关 gateOpen）：
+// `sub_10099156C` 的返回语义经两处消费点钉死——
+//   ① `sub_100919874`（可玩性谓词）直返它的值，消费点 sub_1008660F8 的 `CBNZ W0`（选中该难度）
+//      把非零当"可用"；
+//   ② `sub_100991508` 里 `if (56C & 1) → 返回全 0 字节（全锁）`，方向一致。
+//   ⇒ **1 = 放行、0 = 锁**。v2.10 曾返 0 → 全曲锁死（实机事故）；入口直返 **1**。
 static void s_finale_gate_open(void *vctx) {
-    if (!atomic_load(&s_unlock_all)) return;
-    ucontext_t *uc = (ucontext_t *)vctx;
-    if (!uc || !uc->uc_mcontext) return;
-    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
-    ss->__x[0] = 1;                            // 放行（1 = 可玩；0 = 锁——勿再弄反）
-    __darwin_arm_thread_state64_set_pc_fptr(*ss,
-        (void *)__darwin_arm_thread_state64_get_lr(*ss));
-    atomic_fetch_add(&s_lock_hits, 1);
+    if (!atomic_load(&s_gate_open)) return;
+    s_ret(1, vctx);
 }
 
-// 链进度覆盖（v2.10）：sub_10098FB1C 是 7.0 新增「链」系统的查表点——把硬编码曲名
-// （InitFunc_194 表：finale 五曲 / konzetsu 五曲+arghena）拼成 "<名>|<难度>" 去 mgr+0x28
-// 容器查节点对象，而对象按 songlist 的 **id** 注册 → id 改名或 set 挪位时查不到 → 该函数
-// 不判空直接读 [NULL+0x28]（实测崩溃链 CA118C → 18A3A8 → 98F5BC → 98FB1C）。
-// 入口直返 100（其自身"无场景对象"路径的合法进度值）→ 不再查表（改名/挪包安全），
-// 且让 sub_10099156C 的 v19=(98FB1C==0) 恒为 0 = 可玩。开关复用 unlock_all。
+// 链进度覆盖（v2.10）：`sub_10098FB1C` 是 7.0 新增「链」系统的查表点——硬编码曲名（InitFunc_194 表）
+//   拼 `"<名>|<难度>"` 去 mgr+0x28 容器查节点对象，而对象按 songlist 的 **id** 注册 → id 改名或
+//   set 挪位即查不到 → 该函数不判空直接读 [NULL+0x28]（实测崩溃链 CA118C → 18A3A8 → 98F5BC → 98FB1C）。
+//   直返 100（其自身"无场景对象"路径的合法进度值）→ 不再查表（改名/挪包安全），
+//   并让链门 v19=(98FB1C==0) 恒为 0。**不设开关**：资源改名的守崩桩，必须常开。
 static void s_chain_prog_neutral(void *vctx) {
-    if (!atomic_load(&s_unlock_all)) return;
-    ucontext_t *uc = (ucontext_t *)vctx;
-    if (!uc || !uc->uc_mcontext) return;
-    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
-    ss->__x[0] = 100;                          // 0..100 进度语义；100 = 无进度/无对象
-    __darwin_arm_thread_state64_set_pc_fptr(*ss,
-        (void *)__darwin_arm_thread_state64_get_lr(*ss));
-    atomic_fetch_add(&s_lock_hits, 1);
+    s_ret(100, vctx);
 }
 
-// ---------------- 登录门守卫开关（功能账 §1.4；no-replay 变体，2026-09-18）----------------
-// 14 个站点均为 CBZ/TBZ（PC 相对指令）→ **不可重放**；处理器按 W0 自判分支走向：
-// 命中时 W0 = 紧邻的 BL checkA/checkB 返回值（14/14 逐站点核实）。永不使用 replay 槽。
-//   login_open 真（默认）→ 永远落穿 = 弹窗路径不可达（解锁/领奖/联机动作照常发起）
-//   login_open 假         → 查 k_login_meta 复刻原分支语义（A/B 对照调试用）
-static _Atomic(bool) s_login_open = true;
-
-void xrc_brk_set_login_open(bool on) { atomic_store(&s_login_open, on); }
-bool xrc_brk_login_open(void)        { return atomic_load(&s_login_open); }
-
-// kind: 0 = CBZ（W0==0 时跳向弹窗）/ 1 = TBZ W0,#0（bit0==0 时跳向弹窗）
-typedef struct {
-    uint64_t site_off;
-    uint64_t target_off;
-    uint8_t  kind;
-} xrc_login_meta_t;
-
-static const xrc_login_meta_t k_login_meta[] = {
-    { XRC_BRK_LOGIN_MEM_A_SITE_OFF,       0x112F8CULL, 0 },
-    { XRC_BRK_LOGIN_MEM_B_SITE_OFF,       0x112F8CULL, 1 },
-    { XRC_BRK_LOGIN_MISSION1_A_SITE_OFF,  0xA8EB68ULL, 0 },
-    { XRC_BRK_LOGIN_MISSION1_B_SITE_OFF,  0xA8EB68ULL, 1 },
-    { XRC_BRK_LOGIN_MISSION2_A_SITE_OFF,  0xA90D48ULL, 0 },
-    { XRC_BRK_LOGIN_MISSION2_B_SITE_OFF,  0xA90D48ULL, 1 },
-    { XRC_BRK_LOGIN_MISSION3_A_SITE_OFF,  0xA9143CULL, 0 },
-    { XRC_BRK_LOGIN_MISSION3_B_SITE_OFF,  0xA9143CULL, 1 },
-    { XRC_BRK_LOGIN_LINKPLAY1_A_SITE_OFF, 0xCBB624ULL, 0 },
-    { XRC_BRK_LOGIN_LINKPLAY1_B_SITE_OFF, 0xCBB624ULL, 0 },
-    { XRC_BRK_LOGIN_LINKPLAY2_A_SITE_OFF, 0xCBBC64ULL, 0 },
-    { XRC_BRK_LOGIN_LINKPLAY2_B_SITE_OFF, 0xCBBC64ULL, 0 },
-    { XRC_BRK_LOGIN_LINKPLAY3_A_SITE_OFF, 0xCBCDA8ULL, 0 },
-    { XRC_BRK_LOGIN_LINKPLAY3_B_SITE_OFF, 0xCBCDA8ULL, 0 },
-};
-
-static void s_login_guard(void *vctx) {
-    ucontext_t *uc = (ucontext_t *)vctx;
-    if (!uc || !uc->uc_mcontext) return;
-    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
-    uint64_t pc = (uint64_t)__darwin_arm_thread_state64_get_pc(*ss);
-    uint64_t mb = atomic_load(&s_main_base);
-    if (!mb) return;
-    if (atomic_load(&s_login_open)) {
-        __darwin_arm_thread_state64_set_pc_fptr(*ss, (void *)(pc + 4));
-        return;
-    }
-    uint64_t site_off = pc - mb;
-    for (size_t i = 0; i < sizeof(k_login_meta) / sizeof(k_login_meta[0]); i++) {
-        if (k_login_meta[i].site_off == site_off) {
-            uint32_t w0 = (uint32_t)ss->__x[0];
-            bool take = k_login_meta[i].kind ? ((w0 & 1u) == 0u) : (w0 == 0u);
-            __darwin_arm_thread_state64_set_pc_fptr(*ss,
-                (void *)(take ? mb + k_login_meta[i].target_off : pc + 4));
-            return;
-        }
-    }
-    // 未匹配（异常路径）：安全落穿
-    __darwin_arm_thread_state64_set_pc_fptr(*ss, (void *)(pc + 4));
-}
 
 // ---------------- 自动演奏站点处理器（eve 全量对齐；功能账 §5.2，2026-09-18）----------------
 // 全部受 xrc_judge_autoplay() 开关：关 → 处理器直接返回（不改 PC）→ 分发器送回重放跳板，
@@ -520,29 +457,9 @@ static const xrc_brk_entry_t k_brk_entries[] = {
     { "unlock_l1",   XRC_BRK_UNLOCK_L1_SITE_OFF,  XRC_BRK_UNLOCK_L1_REPLAY_OFF,  s_unlock_force_true },
     { "unlock_l2",   XRC_BRK_UNLOCK_L2_SITE_OFF,  XRC_BRK_UNLOCK_L2_REPLAY_OFF,  s_unlock_force_true },
     { "unlock_l3",   XRC_BRK_UNLOCK_L3_SITE_OFF,  XRC_BRK_UNLOCK_L3_REPLAY_OFF,  s_unlock_force_true },
-    { "story_gate",  XRC_BRK_STORY_SITE_OFF,      XRC_BRK_STORY_REPLAY_OFF,      s_unlock_force_true },
     { "cb_ready",    XRC_BRK_CB_READY_SITE_OFF,   XRC_BRK_CB_READY_REPLAY_OFF,   s_cb_ready_true },
     { "cb_verify",   XRC_BRK_CB_VERIFY_SITE_OFF,  XRC_BRK_CB_VERIFY_REPLAY_OFF,  s_cb_skip_void },
     { "cb_dispatch", XRC_BRK_CB_DISPATCH_SITE_OFF, XRC_BRK_CB_DISPATCH_REPLAY_OFF, s_cb_skip_void },
-    { "judge107",    XRC_BRK_JUDGE107_SITE_OFF,   XRC_BRK_JUDGE107_REPLAY_OFF,   s_unlock_force_true },
-    { "judge110",    XRC_BRK_JUDGE110_SITE_OFF,   XRC_BRK_JUDGE110_REPLAY_OFF,   s_unlock_force_true },
-    { "judge112",    XRC_BRK_JUDGE112_SITE_OFF,   XRC_BRK_JUDGE112_REPLAY_OFF,   s_unlock_force_true },
-    { "judge108",    XRC_BRK_JUDGE108_SITE_OFF,   XRC_BRK_JUDGE108_REPLAY_OFF,   s_unlock_force_true },
-    // ---- 登录门守卫（no-replay 变体：replay_off = 0，处理器自判分支；功能账 §1.4，2026-09-18）----
-    { "login_mem_a",      XRC_BRK_LOGIN_MEM_A_SITE_OFF,      0, s_login_guard },
-    { "login_mem_b",      XRC_BRK_LOGIN_MEM_B_SITE_OFF,      0, s_login_guard },
-    { "login_mission1_a", XRC_BRK_LOGIN_MISSION1_A_SITE_OFF, 0, s_login_guard },
-    { "login_mission1_b", XRC_BRK_LOGIN_MISSION1_B_SITE_OFF, 0, s_login_guard },
-    { "login_mission2_a", XRC_BRK_LOGIN_MISSION2_A_SITE_OFF, 0, s_login_guard },
-    { "login_mission2_b", XRC_BRK_LOGIN_MISSION2_B_SITE_OFF, 0, s_login_guard },
-    { "login_mission3_a", XRC_BRK_LOGIN_MISSION3_A_SITE_OFF, 0, s_login_guard },
-    { "login_mission3_b", XRC_BRK_LOGIN_MISSION3_B_SITE_OFF, 0, s_login_guard },
-    { "login_linkplay1_a", XRC_BRK_LOGIN_LINKPLAY1_A_SITE_OFF, 0, s_login_guard },
-    { "login_linkplay1_b", XRC_BRK_LOGIN_LINKPLAY1_B_SITE_OFF, 0, s_login_guard },
-    { "login_linkplay2_a", XRC_BRK_LOGIN_LINKPLAY2_A_SITE_OFF, 0, s_login_guard },
-    { "login_linkplay2_b", XRC_BRK_LOGIN_LINKPLAY2_B_SITE_OFF, 0, s_login_guard },
-    { "login_linkplay3_a", XRC_BRK_LOGIN_LINKPLAY3_A_SITE_OFF, 0, s_login_guard },
-    { "login_linkplay3_b", XRC_BRK_LOGIN_LINKPLAY3_B_SITE_OFF, 0, s_login_guard },
     // ---- 自动演奏（eve 全量对齐；功能账 §5.2，2026-09-18 定位）----
     { "ap_ln_state",      XRC_BRK_AP_LN_STATE_SITE_OFF,     XRC_BRK_AP_LN_STATE_REPLAY_OFF,     s_ap_ln_state },
     { "ap_ln_tick",       XRC_BRK_AP_LN_TICK_SITE_OFF,      XRC_BRK_AP_LN_TICK_REPLAY_OFF,      s_ap_ln_tick },
@@ -555,9 +472,9 @@ static const xrc_brk_entry_t k_brk_entries[] = {
     // ---- 自动演奏诊断计数（v2.1）：引擎两个 tick 助手的返回点（MOV X26,X0；只计数+重放）----
     { "ap_tickcnt1",      XRC_BRK_AP_TICKCNT1_SITE_OFF,     XRC_BRK_AP_TICKCNT1_REPLAY_OFF,     s_ap_tickcnt1 },
     { "ap_tickcnt2",      XRC_BRK_AP_TICKCNT2_SITE_OFF,     XRC_BRK_AP_TICKCNT2_REPLAY_OFF,     s_ap_tickcnt2 },
-    // ---- 曲目锁态覆盖（v2.6）：FV 五曲 fast path / DO(konzetsu) 分支的入口直返全解锁 ----
-    { "lock_fv",          XRC_BRK_LOCK_FV_SITE_OFF,         XRC_BRK_LOCK_FV_REPLAY_OFF,         s_lock_all },
-    { "lock_do",          XRC_BRK_LOCK_DO_SITE_OFF,         XRC_BRK_LOCK_DO_REPLAY_OFF,         s_lock_all },
+    // ---- 曲目锁态覆盖（v2.6 建 / v2.12 拆开关）+ 链守卫（v2.10）----
+    { "lock_fv",          XRC_BRK_LOCK_FV_SITE_OFF,         XRC_BRK_LOCK_FV_REPLAY_OFF,         s_lock_fv },
+    { "lock_do",          XRC_BRK_LOCK_DO_SITE_OFF,         XRC_BRK_LOCK_DO_REPLAY_OFF,         s_lock_do },
     { "fv_gate",          XRC_BRK_FV_GATE_SITE_OFF,         XRC_BRK_FV_GATE_REPLAY_OFF,         s_finale_gate_open },
     { "chain_prog",       XRC_BRK_CHAIN_PROG_SITE_OFF,      XRC_BRK_CHAIN_PROG_REPLAY_OFF,      s_chain_prog_neutral },
 };
@@ -679,17 +596,16 @@ void xrc_brk_setup(uint64_t image_base) {
         xrc_log(@"[brk] %s slot reg=%d site=%p(insn=%08X patched=%d) replay=%p",
                 e->name, ok, (void *)site, insn, patched, (void *)replay);
     }
-    // 标记串（inject.py 用它在 dylib 里核对"登录门 no-replay 桩支持"是否在场；
-    // 旧 dylib + 新桩表混用会在守卫首命中时链默认处理器 → 崩，注入脚本据此拒配）。
-    xrc_log(@"[brk] login-guard v1 ready (login_open=%d, slots=%d)",
-            (int)atomic_load(&s_login_open), atomic_load(&s_count));
-    // 同款配对标记：自动演奏站点（ap_*）由本 dylib 处理；旧 dylib 无此表 → 注入脚本拒配。
-    xrc_log(@"[brk] autoplay-eve v1 ready (v2.11 mark=arc-consume/hold-held + lock/finale-gate(1=放行) + chain-guard; autoplay=%d)", (int)xrc_judge_autoplay());
-    // 配对标记：链进度覆盖桩（chain_prog，7.0 新增「链」系统的查表点）由本 dylib 处理。
-    // 旧 dylib 无此站点处理器 → BRK 命中后会落默认处理器（重放原指令）→ 崩因依旧，
-    // 故注入脚本先核对本标记串，缺失即拒配。
-    xrc_log(@"[brk] chain-guard v1 ready (chain_prog -> 100; unlock_all=%d)",
-            (int)atomic_load(&s_unlock_all));
+    // 配对标记 ①：自动演奏站点（ap_*）由本 dylib 处理；旧 dylib 无此表 → 注入脚本拒配。
+    xrc_log(@"[brk] autoplay-eve v1 ready (v2.12 mark=arc-consume/hold-held + lock/finale-gate(1=放行) + chain-guard; autoplay=%d)", (int)xrc_judge_autoplay());
+    // 配对标记 ②：链进度覆盖桩（chain_prog，7.0 新增「链」系统的查表点）由本 dylib 处理；
+    // 旧 dylib 命中该站点会重放原指令 → 崩因依旧，注入脚本据此拒配。此桩**不设开关、恒生效**。
+    xrc_log(@"[brk] chain-guard v1 ready (chain_prog -> 100, always-on)");
+    // v2.12 开关组（原 unlockAll 一拆四；策略/plist 驱动）
+    xrc_log(@"[brk] switches: own=%d fv=%d do=%d gate=%d (slots=%d)",
+            (int)atomic_load(&s_unlock_own), (int)atomic_load(&s_unlock_fv),
+            (int)atomic_load(&s_unlock_do),  (int)atomic_load(&s_gate_open),
+            atomic_load(&s_count));
     xrc_brk_capture_enable(true);
 }
 

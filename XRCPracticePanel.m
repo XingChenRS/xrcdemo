@@ -170,8 +170,18 @@
     CGFloat margin = 12;
     CGFloat bottomInset = 0;
     if (@available(iOS 11.0, *)) bottomInset = w.safeAreaInsets.bottom;
-    self.frame = CGRectMake(margin, w.bounds.size.height - h - margin - bottomInset, w.bounds.size.width - margin * 2, h);
-    self.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
+    CGFloat panelW = w.bounds.size.width - margin * 2;
+    CGPoint o = [self savedOrigin];
+    if (o.x != CGFLOAT_MAX) {
+        // 用上次拖动的位置（夹回可见区）
+        o.x = MIN(MAX(o.x, -panelW + 60), w.bounds.size.width - 60);
+        o.y = MIN(MAX(o.y, 0), MAX(0, w.bounds.size.height - 40));
+        self.frame = CGRectMake(o.x, o.y, panelW, h);
+        self.autoresizingMask = UIViewAutoresizingNone;
+    } else {
+        self.frame = CGRectMake(margin, w.bounds.size.height - h - margin - bottomInset, panelW, h);
+        self.autoresizingMask = UIViewAutoresizingFlexibleTopMargin | UIViewAutoresizingFlexibleWidth;
+    }
     // 内容按最终宽度重排一次（宽度变化会影响换行）
     [self relayoutContent];
     [w addSubview:self];
@@ -221,10 +231,19 @@
     title.text = @"练习面板";
     title.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
     title.textColor = [UIColor whiteColor];
+    title.userInteractionEnabled = YES;                 // 拖动面板（v2.12）
+    [title addGestureRecognizer:[[UIPanGestureRecognizer alloc] initWithTarget:self
+                                                                        action:@selector(onDragPanel:)]];
     [self addSubview:title];
+    // 关闭按钮（收起后点悬浮球可再展开）
+    UIButton *closeBtn = [self makeButton:@"✕" action:@selector(hide)];
+    closeBtn.frame = CGRectMake(x0 + W - 26, y - 4, 26, 26);
+    closeBtn.titleLabel.font = [UIFont systemFontOfSize:12];
+    [closeBtn setTitleColor:[UIColor colorWithWhite:0.8 alpha:1.0] forState:UIControlStateNormal];
+    [self addSubview:closeBtn];
     // v9.0.0：右上角 = 重置循环段落（清 A/B + 关循环；关闭面板改为单击悬浮球）
     UIButton *reset = [self makeButton:@"重置循环" action:@selector(resetLoop)];
-    reset.frame = CGRectMake(x0 + W - 84, y - 3, 84, 26);
+    reset.frame = CGRectMake(x0 + W - 26 - 6 - 84, y - 3, 84, 26);
     [reset setTitleColor:[UIColor systemRedColor] forState:UIControlStateNormal];
     [self addSubview:reset];
     y += 20 + blockGap;
@@ -347,30 +366,29 @@
     [self addSubview:netField];
     y += rowH + gap;
 
-    // ---- 拥有/解锁链 + cb 验证链开关（功能账 §1/§3）----
-    // 直连 BRK 桩 handler（xrc_brk_set_*），即时生效；plist 键 unlockAll/cbBypass 启动时同源。
-    UIButton *unlockBtn = [self makeButton:@"解锁 关" action:@selector(toggleUnlockAll)];
-    unlockBtn.frame = CGRectMake(x0, y, (W - 8) / 2, rowH);
-    unlockBtn.tag = 4210;
-    unlockBtn.titleLabel.font = [UIFont systemFontOfSize:11];
-    [unlockBtn setTitleColor:[UIColor systemPinkColor] forState:UIControlStateNormal];
-    [self addSubview:unlockBtn];
+    // ---- 开关组（v2.12 由 unlockAll 一拆四）----
+    // 直连 BRK 桩 handler（xrc_brk_set_*），即时生效；plist 键 unlockOwn/unlockFv/unlockDo/gateOpen。
+    //   own=拥有链三层 ｜ fv=FV fast path 全解锁 ｜ do=DO 分支全解锁 ｜ gate=终章链门(1=放行)
+    {
+        NSArray *titles = @[@"拥有链 关", @"FV锁 关", @"DO锁 关", @"链门 关"];
+        NSArray *acts   = @[@"toggleUnlockOwn", @"toggleUnlockFv", @"toggleUnlockDo", @"toggleGateOpen"];
+        CGFloat bw = (W - gap) / 2;
+        for (int i = 0; i < 4; i++) {
+            UIButton *b = [self makeButton:titles[i] action:NSSelectorFromString(acts[i])];
+            b.frame = CGRectMake(x0 + (i % 2) * (bw + gap), y + (i / 2) * (rowH + gap), bw, rowH);
+            b.tag = 4210 + i;
+            b.titleLabel.font = [UIFont systemFontOfSize:11];
+            [b setTitleColor:[UIColor systemPinkColor] forState:UIControlStateNormal];
+            [self addSubview:b];
+        }
+        y += 2 * (rowH + gap);
+    }
     UIButton *cbBtn = [self makeButton:@"cb校验 关" action:@selector(toggleCbBypass)];
-    cbBtn.frame = CGRectMake(x0 + (W - 8) / 2 + 8, y, (W - 8) / 2, rowH);
-    cbBtn.tag = 4211;
+    cbBtn.frame = CGRectMake(x0, y, W, rowH);
+    cbBtn.tag = 4214;
     cbBtn.titleLabel.font = [UIFont systemFontOfSize:11];
     [cbBtn setTitleColor:[UIColor systemPinkColor] forState:UIControlStateNormal];
     [self addSubview:cbBtn];
-    y += rowH + gap;
-
-    // ---- 登录门守卫开关（功能账 §1.4）----
-    // BRK no-replay 桩的运行时开关：开=解锁/领奖/联机不再弹"必须在线登录"。
-    UIButton *loginBtn = [self makeButton:@"登录门 开" action:@selector(toggleLoginOpen)];
-    loginBtn.frame = CGRectMake(x0, y, W, rowH);
-    loginBtn.tag = 4212;
-    loginBtn.titleLabel.font = [UIFont systemFontOfSize:11];
-    [loginBtn setTitleColor:[UIColor systemPinkColor] forState:UIControlStateNormal];
-    [self addSubview:loginBtn];
     y += rowH + gap;
 
     // ---- 自动演奏（功能账 §5）----
@@ -479,6 +497,36 @@
 }
 
 // 私服开关：改写开启后，API 请求会打到自有服务端（path/query 原样保留）
+// ---- 拖动面板 + 位置持久化（v2.12；与 config 同一 plist，键 panelX/panelY）----
+- (CGPoint)savedOrigin {
+    NSDictionary *p = [NSDictionary dictionaryWithContentsOfFile:xrc_config_path()] ?: @{};
+    NSNumber *x = p[@"panelX"], *y = p[@"panelY"];
+    if (!x || !y) return CGPointMake(CGFLOAT_MAX, CGFLOAT_MAX);   // 哨兵：未保存
+    return CGPointMake(x.doubleValue, y.doubleValue);
+}
+- (void)saveOrigin:(CGPoint)o {
+    NSMutableDictionary *p = [([NSDictionary dictionaryWithContentsOfFile:xrc_config_path()] ?: @{}) mutableCopy];
+    p[@"panelX"] = @(o.x); p[@"panelY"] = @(o.y);
+    [p writeToFile:xrc_config_path() atomically:YES];
+}
+- (void)onDragPanel:(UIPanGestureRecognizer *)g {
+    UIView *w = self.superview;
+    if (!w) return;
+    CGPoint t = [g translationInView:w];
+    CGRect f = self.frame;
+    f.origin.x += t.x; f.origin.y += t.y;
+    CGFloat minX = -f.size.width + 60, maxX = w.bounds.size.width - 60;
+    f.origin.x = MIN(MAX(f.origin.x, minX), maxX);
+    f.origin.y = MIN(MAX(f.origin.y, 0), MAX(0, w.bounds.size.height - 40));
+    self.frame = f;
+    [g setTranslation:CGPointZero inView:w];
+    if (g.state == UIGestureRecognizerStateEnded ||
+        g.state == UIGestureRecognizerStateCancelled) {
+        self.autoresizingMask = UIViewAutoresizingNone;   // 拖动后不再自动贴底
+        [self saveOrigin:f.origin];
+    }
+}
+
 - (void)toggleNet {
     xrc_config_t c; xrc_config_load(&c);
     if (!c.net_enabled) {
@@ -503,14 +551,38 @@
     [self refresh];
 }
 
-// 拥有/解锁链开关（功能账 §1）：拥有链三层 + 故事门 + 内部计数条件判定 全部恒真
-- (void)toggleUnlockAll {
+// 开关组（v2.12 一拆四；功能账 §1）：四个独立开关，各自即时生效
+- (void)toggleUnlockOwn {
     xrc_config_t c; xrc_config_load(&c);
-    c.unlock_all = !c.unlock_all;
-    xrc_config_save(&c);
-    xrc_brk_set_unlock_all(c.unlock_all);
-    [WHToast showMessage:c.unlock_all ? @"解锁全开（拥有链+故事门+条件判定 恒真）"
-                                      : @"解锁恢复原判定" duration:1.4 finishHandler:^{}];
+    c.unlock_own = !c.unlock_own; xrc_config_save(&c);
+    xrc_brk_set_unlock_own(c.unlock_own);
+    [WHToast showMessage:c.unlock_own ? @"拥有链三层 恒真（离线/未授予时才有意义）"
+                                      : @"拥有链恢复原判定" duration:1.4 finishHandler:^{}];
+    [self refresh];
+}
+- (void)toggleUnlockFv {
+    xrc_config_t c; xrc_config_load(&c);
+    c.unlock_fv = !c.unlock_fv; xrc_config_save(&c);
+    xrc_brk_set_unlock_fv(c.unlock_fv);
+    [WHToast showMessage:c.unlock_fv ? @"FV 五曲锁态：五难度全解" : @"FV 锁态恢复原判定"
+                 duration:1.4 finishHandler:^{}];
+    [self refresh];
+}
+- (void)toggleUnlockDo {
+    xrc_config_t c; xrc_config_load(&c);
+    c.unlock_do = !c.unlock_do; xrc_config_save(&c);
+    xrc_brk_set_unlock_do(c.unlock_do);
+    [WHToast showMessage:c.unlock_do ? @"DO 曲锁态：五难度全解（会显示 DO 专属曲绘）"
+                                     : @"DO 锁态恢复原判定" duration:1.4 finishHandler:^{}];
+    [self refresh];
+}
+- (void)toggleGateOpen {
+    xrc_config_t c; xrc_config_load(&c);
+    c.gate_open = !c.gate_open; xrc_config_save(&c);
+    xrc_brk_set_gate_open(c.gate_open);
+    [WHToast showMessage:c.gate_open ? @"终章链门：放行（整表解锁的总闸）"
+                                     : @"终章链门恢复原判定（未推进链 → 锁）"
+                 duration:1.4 finishHandler:^{}];
     [self refresh];
 }
 
@@ -522,17 +594,6 @@
     xrc_brk_set_cb_bypass(c.cb_bypass);
     [WHToast showMessage:c.cb_bypass ? @"cb 校验已跳过（改谱面/cb 自由化）"
                                      : @"cb 校验恢复" duration:1.4 finishHandler:^{}];
-    [self refresh];
-}
-
-// 登录门守卫开关（功能账 §1.4）：开=解锁/领奖/联机不弹"必须在线登录"；关=复刻原行为
-- (void)toggleLoginOpen {
-    xrc_config_t c; xrc_config_load(&c);
-    c.login_open = !c.login_open;
-    xrc_config_save(&c);
-    xrc_brk_set_login_open(c.login_open);
-    [WHToast showMessage:c.login_open ? @"登录门已放开（解锁/领奖/联机不再拦截）"
-                                      : @"登录门恢复原判定" duration:1.4 finishHandler:^{}];
     [self refresh];
 }
 
@@ -625,33 +686,30 @@
                  forState:UIControlStateNormal];
     }
 
-    // 解锁 / cb 开关状态（读运行时开关原子——策略热载翻的也会反映在这里）
-    UIButton *ub = (UIButton *)[self viewWithTag:4210];
-    if (ub) {
-        BOOL on = xrc_brk_unlock_all();
-        [ub setTitle:(on ? @"解锁 开" : @"解锁 关") forState:UIControlStateNormal];
-        ub.backgroundColor = on ? [UIColor colorWithRed:0.6 green:0.1 blue:0.3 alpha:1.0]
-                                : [UIColor colorWithWhite:0.25 alpha:1.0];
-        [ub setTitleColor:on ? [UIColor whiteColor] : [UIColor systemPinkColor]
-                 forState:UIControlStateNormal];
+    // 开关组状态（读运行时开关原子——策略热载翻的也会反映在这里）
+    {
+        NSArray *onTitles  = @[@"拥有链 开", @"FV锁 开", @"DO锁 开", @"链门 开"];
+        NSArray *offTitles = @[@"拥有链 关", @"FV锁 关", @"DO锁 关", @"链门 关"];
+        BOOL states[4] = { xrc_brk_unlock_own(), xrc_brk_unlock_fv(),
+                           xrc_brk_unlock_do(),  xrc_brk_gate_open() };
+        for (int i = 0; i < 4; i++) {
+            UIButton *b = (UIButton *)[self viewWithTag:4210 + i];
+            if (!b) continue;
+            BOOL on = states[i];
+            [b setTitle:(on ? onTitles[i] : offTitles[i]) forState:UIControlStateNormal];
+            b.backgroundColor = on ? [UIColor colorWithRed:0.6 green:0.1 blue:0.3 alpha:1.0]
+                                   : [UIColor colorWithWhite:0.25 alpha:1.0];
+            [b setTitleColor:on ? [UIColor whiteColor] : [UIColor systemPinkColor]
+                     forState:UIControlStateNormal];
+        }
     }
-    UIButton *cbb = (UIButton *)[self viewWithTag:4211];
+    UIButton *cbb = (UIButton *)[self viewWithTag:4214];
     if (cbb) {
         BOOL on = xrc_brk_cb_bypass();
         [cbb setTitle:(on ? @"cb校验 开" : @"cb校验 关") forState:UIControlStateNormal];
         cbb.backgroundColor = on ? [UIColor colorWithRed:0.6 green:0.1 blue:0.3 alpha:1.0]
                                  : [UIColor colorWithWhite:0.25 alpha:1.0];
         [cbb setTitleColor:on ? [UIColor whiteColor] : [UIColor systemPinkColor]
-                 forState:UIControlStateNormal];
-    }
-    UIButton *lgb = (UIButton *)[self viewWithTag:4212];
-    if (lgb) {
-        BOOL on = xrc_brk_login_open();
-        [lgb setTitle:(on ? @"登录门 开（解锁/领奖/联机免登录拦截）" : @"登录门 关（原判定）")
-             forState:UIControlStateNormal];
-        lgb.backgroundColor = on ? [UIColor colorWithRed:0.6 green:0.1 blue:0.3 alpha:1.0]
-                                 : [UIColor colorWithWhite:0.25 alpha:1.0];
-        [lgb setTitleColor:on ? [UIColor whiteColor] : [UIColor systemPinkColor]
                  forState:UIControlStateNormal];
     }
     UIButton *apb = (UIButton *)[self viewWithTag:4213];

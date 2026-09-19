@@ -70,33 +70,10 @@ BRK_HOOKS = [
     ("unlock_l1",  0x100BE46AC, 0x101468058, "093441f9"),  # 层1 sub_100BE46A8 +4（拥有表线性扫描）
     ("unlock_l2",  0x100BE46EC, 0x101468060, "ff0302d1"),  # 层2 sub_100BE46EC 入口（SUB SP,#0x80）
     ("unlock_l3",  0x100BE4D38, 0x101468068, "fd7bbfa9"),  # 层3 sub_100BE4D38 入口（STP X29,X30,[SP,#-0x10]!）
-    ("story_gate", 0x1009346E0, 0x101468070, "ffc301d1"),  # 故事门 sub_1009346E0 入口（SUB SP,#0x70）
     # ---- cb 验证链（功能账 §3，2026-09-14 重定位）----
     ("cb_ready",    0x100F43274, 0x101468078, "00a04039"),  # 就绪位 getter（LDRB W0,[X0,#0xA];RET）
     ("cb_verify",   0x100F43FFC, 0x101468080, "fc6fbaa9"),  # 全树校验入口（STP X28,X27,[SP,#-0x60]!）
     ("cb_dispatch", 0x10013C5E8, 0x101468088, "ff0304d1"),  # 更新错码分发入口（SUB SP,#0x100）
-    # ---- 解锁条件"内部计数"判定（功能账 §1.2）----
-    ("judge107", 0x100AB300C, 0x101468090, "080840b9"),  # SpellMagnolia 判定（LDR W8,[X0,#8]）
-    ("judge110", 0x100184064, 0x101468098, "080c40b9"),  # ArghenaCourse 判定（LDR W8,[X0,#0xC]）
-    ("judge112", 0x100184084, 0x1014680A0, "080c40b9"),  # AlterEgoPuzzle 判定
-    ("judge108", 0x100183FDC, 0x1014680A8, "f44fbea9"),  # ArghenaStories 判定（STP X20,X19,[SP,#-0x20]!）
-    # ---- 登录门守卫（no-replay 变体：分支为 PC 相对指令，处理器自设 PC；功能账 §1.4）----
-    # replay_va = None：不建重放跳板；expect = 原 CBZ/TBZ 指令字节；
-    # 需 dylib 带 "login-guard v1" 支持（main() 做配对校验）。
-    ("login_mem_a",       0x100112F4C, None, "00020034"),  # 记忆源点解锁 A（CBZ W0）
-    ("login_mem_b",       0x100112F58, None, "a0010036"),  # 记忆源点解锁 B（TBZ W0,#0）
-    ("login_mission1_a",  0x100A8EAE8, None, "00040034"),  # 任务奖励① A
-    ("login_mission1_b",  0x100A8EAF4, None, "a0030036"),  # 任务奖励① B
-    ("login_mission2_a",  0x100A90CC8, None, "00040034"),  # 任务奖励② A
-    ("login_mission2_b",  0x100A90CD4, None, "a0030036"),  # 任务奖励② B
-    ("login_mission3_a",  0x100A913BC, None, "00040034"),  # 任务奖励③ A
-    ("login_mission3_b",  0x100A913C8, None, "a0030036"),  # 任务奖励③ B
-    ("login_linkplay1_a", 0x100CBB5EC, None, "c0010034"),  # Link Play① A
-    ("login_linkplay1_b", 0x100CBB5F8, None, "60010034"),  # Link Play① B
-    ("login_linkplay2_a", 0x100CBBC18, None, "60020034"),  # Link Play② A
-    ("login_linkplay2_b", 0x100CBBC24, None, "00020034"),  # Link Play② B
-    ("login_linkplay3_a", 0x100CBCD70, None, "c0010034"),  # Link Play③ A
-    ("login_linkplay3_b", 0x100CBCD7C, None, "60010034"),  # Link Play③ B
     # ---- 自动演奏（eve 全量对齐；功能账 §5.2，2026-09-18 定位）----
     # 站点语义/handler 见 XRCProfile.h + XRCHook.m；开关 xrc_judge_set_autoplay（默认关）。
     # 关时各站重放原指令，行为与未注入一致；开启后长条走原版 Pure tick、窗口点强判、
@@ -137,21 +114,16 @@ BRK_HOOKS = [
 #     （见上方 BRK_HOOKS）——运行时可开关、逻辑在 dylib 层。
 # (名称, VA, 原字节 hex, 补丁字节 hex) —— 幂等：已是补丁字节跳过；expect 不符即报错。
 GATE_PATCHES = [
-    # 离线 BYD 门（6.13 0x1007D1FD5 的 7.0 对应）
-    ("byd_offline_gate",  0x10084D778, "9f0e0071", "9fbe0071"),
-    # 下载态判定（2026-09-19 定位，子代理 T1；补丁形式与 BYD 门同款单字节 imm12 翻转
-    #   3 → 0x2F：把"难度==3 → 下载式文件清单(mode 2)"的触发条件废掉，BYD 走标准 mode 0，
-    #   下载态随 cb 预置内容判"就绪"。两处分别是状态查询与可玩性捷径。）：
-    ("byd_state_mode",    0x100844830, "5f0c0071", "5fbc0071"),  # sub_100844774：CMP W2,#3 → #0x2F
-    ("byd_playable_hint", 0x10084EC7C, "9f0e0071", "9fbe0071"),  # sub_10084EC30：CMP W20,#3 → #0x2F
-    # 下载态"就绪"钉死（2026-09-19 取证：research/notes/xrc-download-state-rootcause-2026-09-19.md）：
-    # sub_100844774 的真值是 mgr(Game+0x88) 内存表，表由服务器清单响应/CB 完成回调/dl 目录扫描
-    # 三处写入；三处门禁补丁只改"查哪些文件名"、不改表的空否。下面两条把该函数两个非零出口
-    # （1=需要下载 / 2=可更新）都钉成 0=就绪——对自持内容的场景即"离线内容一律视为已就绪"。
-    # 副作用：全 App 的下载/更新提示不再出现（启动键 img/download.png、Download song? 弹窗等）；
-    #         真缺谱面时的开局 throw（sub_100CA118C）链路不受影响。
-    ("dl_state_ready_a",  0x100844954, "13119f1a", "13008052"),  # CSEL W19,W8,WZR,NE → MOV W19,#0（出口"2"）
-    ("dl_state_ready_b",  0x100844964, "33008052", "13008052"),  # MOV W19,#1       → MOV W19,#0（出口"1"）
+    # 下载态"就绪"钉死——**合并后仅此一条**（2026-09-19 定稿；原 5 条 → 1 条）。
+    # 语义（取证 research/notes/xrc-download-state-rootcause-2026-09-19.md）：
+    #   sub_100844774(mgr, level, difficulty, mode) 是下载态总查询，真值表 = mgr(Game+0x88) 内存表
+    #   （服务器清单响应 / CB 完成回调 / dl 目录扫描 三处写入）。原补丁只改"查哪些文件名"
+    #   （byd_state_mode/byd_playable_hint）与出口值（dl_state_ready_a/b）——**入口直返 0（就绪）
+    #   一条即可覆盖全部出口与全部分支**（含"难度==3 → 下载式清单"那条特判，因为它也在本函数内）。
+    # 入口 8 字节 = `mov w0,#0; ret`（吃掉原 `SUB SP,#0x90` + `STP X26,X25,[SP,#-0x40]` 两条序言，
+    #   立即返回不再用栈，安全）。副作用：全 App 的下载/更新提示不再出现；真缺谱面时开局的
+    #   throw（sub_100CA118C）链路不受影响（那是独立的谱面路径构建）。
+    ("dl_state_ready_merged", 0x100844774, "ff4302d1fa6704a9", "00008052c0035fd6"),
 ]
 # 重放跳板必须避免 PC 相关指令（ADRP/ADR/B/BL/CBZ/TBZ/LDR-literal）——
 # 跳板在别处执行，PC 相对寻址会算错。这里只做"显然安全"的粗筛并提示。
@@ -655,17 +627,10 @@ def main():
         print(f"[!] {e}")
         sys.exit(1)
 
-    # 配对校验：桩表含 no-replay 登录门桩 → dylib 必须带对应支持（标记串在场）。
-    # 旧 dylib + 新桩表混用：守卫首命中 → 兜底循环找不到匹配（旧表无此站点）→
-    # 链默认处理器 → EXC_BREAKPOINT。宁可此处拒配。
-    if any(r is None for _n, _s, r, _e in BRK_HOOKS):
-        marker = b"login-guard v1"
-        if not any(marker in open(d, "rb").read() for d in dylibs):
-            print("[!] dylibs lack 'login-guard v1' support (need 2026-09-18+ build) —")
-            print("    login-gate no-replay stubs would crash the app on first guard hit.")
-            sys.exit(3)
-
-    # 同款配对校验：autoplay 桩（ap_*）需要 dylib 侧有对应站点处理器（"autoplay-eve v1"）。
+    # 配对校验（2026-09-19 精简后仅剩两条）：
+    #   ① autoplay 桩（ap_*）需要 dylib 侧处理器（"autoplay-eve v1"）；
+    #   ② 链进度桩（chain_prog）需要 "chain-guard v1"。
+    # 旧 dylib + 新桩表混用会落默认处理器 → 崩，故缺标记即拒配。
     if any(n.startswith("ap_") for n, _s, _r, _e in BRK_HOOKS):
         marker = b"autoplay-eve v1"
         if not any(marker in open(d, "rb").read() for d in dylibs):

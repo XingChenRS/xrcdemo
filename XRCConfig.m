@@ -51,12 +51,13 @@ static void s_ensure_defaults(NSMutableDictionary *p) {
     if (!p[@"netEnabled"]) p[@"netEnabled"] = @NO;
     if (!p[@"netBase"])    p[@"netBase"]    = @"http://192.168.110.253:8080";
     if (!p[@"netMatch"])   p[@"netMatch"]   = @"";
-    // 拥有/解锁链开关：默认关闭（打开前先确认已了解风险——服务端成绩校验仍会拒）
-    if (!p[@"unlockAll"])  p[@"unlockAll"]  = @NO;
+    // 开关组（v2.12 一拆四）：默认全关（打开前先确认已了解风险——服务端成绩校验仍会拒）
+    if (!p[@"unlockOwn"])  p[@"unlockOwn"]  = @NO;
+    if (!p[@"unlockFv"])   p[@"unlockFv"]   = @NO;
+    if (!p[@"unlockDo"])   p[@"unlockDo"]   = @NO;
+    if (!p[@"gateOpen"])   p[@"gateOpen"]   = @NO;
     // cb 验证链开关：默认关闭（开 = 改谱面/cb 自由化）
     if (!p[@"cbBypass"])   p[@"cbBypass"]   = @NO;
-    // 登录门守卫开关：默认开启（内容动作不再被"必须在线登录"拦住；关=复刻原行为）
-    if (!p[@"loginOpen"])  p[@"loginOpen"]  = @YES;
     // 自动演奏：默认关闭（开启 = 全谱强制 Pure，练习外勿用）
     if (!p[@"autoplay"])   p[@"autoplay"]   = @NO;
 }
@@ -117,9 +118,11 @@ void xrc_config_load(xrc_config_t *out) {
     out->net_enabled    = [prefs[@"netEnabled"] boolValue];
     out->net_base       = [prefs[@"netBase"] length] ? prefs[@"netBase"] : nil;
     out->net_match      = [prefs[@"netMatch"] length] ? prefs[@"netMatch"] : nil;
-    out->unlock_all     = [prefs[@"unlockAll"] boolValue];
+    out->unlock_own     = [prefs[@"unlockOwn"] boolValue];
+    out->unlock_fv      = [prefs[@"unlockFv"] boolValue];
+    out->unlock_do      = [prefs[@"unlockDo"] boolValue];
+    out->gate_open      = [prefs[@"gateOpen"] boolValue];
     out->cb_bypass      = [prefs[@"cbBypass"] boolValue];
-    out->login_open     = [prefs[@"loginOpen"] boolValue];
     out->autoplay       = [prefs[@"autoplay"] boolValue];
 }
 
@@ -136,9 +139,11 @@ void xrc_config_save(const xrc_config_t *c) {
     p[@"netEnabled"]    = @(c->net_enabled);
     p[@"netBase"]       = c->net_base ?: @"";
     p[@"netMatch"]      = c->net_match ?: @"";
-    p[@"unlockAll"]     = @(c->unlock_all);
+    p[@"unlockOwn"]     = @(c->unlock_own);
+    p[@"unlockFv"]      = @(c->unlock_fv);
+    p[@"unlockDo"]      = @(c->unlock_do);
+    p[@"gateOpen"]      = @(c->gate_open);
     p[@"cbBypass"]      = @(c->cb_bypass);
-    p[@"loginOpen"]     = @(c->login_open);
     p[@"autoplay"]      = @(c->autoplay);
     xrc_config_write_dict(p);
 }

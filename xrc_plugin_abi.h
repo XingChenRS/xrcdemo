@@ -13,7 +13,8 @@
 
 #define XRC_PLUGIN_ABI_V1 1u
 #define XRC_PLUGIN_ABI_V2 2u   // v2：尾部追加功能开关（unlock_all / cb_bypass）
-#define XRC_PLUGIN_ABI_NOW XRC_PLUGIN_ABI_V2
+#define XRC_PLUGIN_ABI_V3 3u   // v3：开关组一拆四（unlock_own/fv/do + gate_open），去掉登录门
+#define XRC_PLUGIN_ABI_NOW XRC_PLUGIN_ABI_V3
 
 typedef struct xrc_host {
     uint32_t abi;                  // = XRC_PLUGIN_ABI_NOW（内层必须校验）
@@ -44,9 +45,14 @@ typedef struct xrc_host {
     size_t   (*brk_blob_take)(void *buf, size_t cap);
     uint64_t (*brk_blob_sp)(void);
 
-    // 功能开关（v2 追加；见功能账 §1/§3。内层：host->abi >= 2 才可用）
-    void     (*brk_set_unlock_all)(bool on);   // 拥有/解锁链四桩强制真
+    // 功能开关（v2 追加；见功能账 §1/§3。内层：host->abi 校验版本）
+    void     (*brk_set_unlock_all)(bool on);   // [v2 遗留字段] 老外层用；v3 外层置 NULL
     void     (*brk_set_cb_bypass)(bool on);    // cb 就绪恒真 + 校验/错码分发跳过
+    // v3 追加：开关组一拆四（每个都可独立拨动）
+    void     (*brk_set_unlock_own)(bool on);   // 拥有链 unlock_l1/l2/l3
+    void     (*brk_set_unlock_fv)(bool on);    // lock_fv（FV fast path 全解锁）
+    void     (*brk_set_unlock_do)(bool on);    // lock_do（DO/konzetsu 分支全解锁）
+    void     (*brk_set_gate_open)(bool on);    // fv_gate（链门 1 = 放行）
 } xrc_host_t;
 
 // 内层必须导出的唯一入口。整个调用包在 @try/@catch + 信号兜底里。

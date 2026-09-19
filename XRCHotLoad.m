@@ -153,7 +153,11 @@ bool xrc_hotload_run(void) {
     s_host.brk_blob_seq     = xrc_brk_blob_seq;
     s_host.brk_blob_take    = xrc_brk_blob_take;
     s_host.brk_blob_sp      = xrc_brk_blob_sp;
-    s_host.brk_set_unlock_all = xrc_brk_set_unlock_all;
+    s_host.brk_set_unlock_all = NULL;              // v3：改用下面四个细粒度开关
+    s_host.brk_set_unlock_own = xrc_brk_set_unlock_own;
+    s_host.brk_set_unlock_fv  = xrc_brk_set_unlock_fv;
+    s_host.brk_set_unlock_do  = xrc_brk_set_unlock_do;
+    s_host.brk_set_gate_open  = xrc_brk_set_gate_open;
     s_host.brk_set_cb_bypass  = xrc_brk_set_cb_bypass;
 
     int rc = -1;

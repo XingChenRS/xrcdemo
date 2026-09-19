@@ -470,18 +470,24 @@ int xrc_plugin_main(const xrc_host_t *host) {
 
     // 拥有/解锁链开关（功能账 §1）：策略驱动。热载重触发即生效（无需重启 app）。
     // 优先走宿主 ABI v2 字段；旧外层回退 dlsym。
-    v = 0;
-    if (pol && pol_get_num(pol, "unlock_all", &v)) {
-        void (*set_unlock)(bool) = NULL;
-        if (host->abi >= XRC_PLUGIN_ABI_V2 && host->brk_set_unlock_all)
-            set_unlock = host->brk_set_unlock_all;
-        if (!set_unlock)
-            set_unlock = (void (*)(bool))dlsym(RTLD_DEFAULT, "xrc_brk_set_unlock_all");
-        if (set_unlock) {
-            set_unlock(v == 1);
-            host->log("→ unlock_all = %lld", v);
-        } else {
-            host->log("→ unlock_all: 外层无此能力（需重新注入新外层）");
+    // 开关组（v3 一拆四；策略驱动，热载重触发即生效）：
+    //   unlock_own / unlock_fv / unlock_do / gate_open；
+    //   为兼容旧策略保留 unlock_all（缺细粒度键时 = 四个一起拨）。
+    // 外层能力经 host ABI v3 字段或 dlsym 获取（旧外层只有 v2 的 brk_set_unlock_all → 走 dlsym 会失败并记日志）。
+    {
+        static const char *keys[4] = { "unlock_own", "unlock_fv", "unlock_do", "gate_open" };
+        static const char *syms[4] = { "xrc_brk_set_unlock_own", "xrc_brk_set_unlock_fv",
+                                       "xrc_brk_set_unlock_do",  "xrc_brk_set_gate_open" };
+        long long legacy = 0;
+        int has_legacy = (pol && pol_get_num(pol, "unlock_all", &legacy)) ? 1 : 0;
+        for (int i = 0; i < 4; i++) {
+            long long val = 0;
+            int has = (pol && pol_get_num(pol, keys[i], &val)) ? 1 : 0;
+            if (!has && has_legacy) { has = 1; val = legacy; }
+            if (!has) continue;
+            void (*fn)(bool) = (void (*)(bool))dlsym(RTLD_DEFAULT, syms[i]);
+            if (fn) { fn(val == 1); host->log("→ %s = %lld", keys[i], val); }
+            else    { host->log("→ %s: 外层无此符号（需重新注入新外层）", keys[i]); }
         }
     }
     // cb 验证链开关（功能账 §3）：同上，策略驱动
@@ -497,18 +503,6 @@ int xrc_plugin_main(const xrc_host_t *host) {
             host->log("→ cb_bypass = %lld", v);
         } else {
             host->log("→ cb_bypass: 外层无此能力（需重新注入新外层）");
-        }
-    }
-    // 登录门守卫开关（功能账 §1.4）：策略驱动；只走 dlsym（host ABI 表暂未扩列）
-    v = 0;
-    if (pol && pol_get_num(pol, "login_open", &v)) {
-        void (*set_lg)(bool) =
-            (void (*)(bool))dlsym(RTLD_DEFAULT, "xrc_brk_set_login_open");
-        if (set_lg) {
-            set_lg(v == 1);
-            host->log("→ login_open = %lld", v);
-        } else {
-            host->log("→ login_open: 外层无此符号（需重新注入新外层）");
         }
     }
     // 自动演奏（功能账 §5）：策略驱动
