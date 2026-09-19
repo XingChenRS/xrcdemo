@@ -302,7 +302,7 @@ uint32_t xrc_net_dl_done(void) { return atomic_load(&s_dl_done); }
 static IMP s_orig_dlreq = NULL, s_orig_dlreqc = NULL, s_orig_dlurl = NULL, s_orig_dlurlc = NULL,
            s_orig_dlresume = NULL, s_orig_dtcreq = NULL, s_orig_dtcurl = NULL,
            s_orig_resume = NULL, s_orig_dlcomplete = NULL, s_orig_dlfinish = NULL,
-           s_orig_cfile = NULL, s_orig_cdata = NULL;
+           s_orig_cfile = NULL, s_orig_cdata = NULL, s_orig_dl_redirect = NULL;
 
 // 下载请求也过一遍白名单改写（与 API 请求同源规则；未命中原样返回）
 static NSURLRequest *s_rw_req(NSURLRequest *req) {
@@ -362,8 +362,9 @@ static void s_dl_complete(id self_, SEL _cmd, NSURLSession *sess, NSURLSessionTa
     atomic_fetch_add(&s_dl_done, 1);
     @try {
         NSHTTPURLResponse *r = (NSHTTPURLResponse *)task.response;
-        xrc_log(@"[net:dl] done %@ status=%ld bytes=%lld err=%@",
-                task.originalRequest.URL.absoluteString, (long)r.statusCode,
+        NSString *fin = r.URL.absoluteString ?: task.currentRequest.URL.absoluteString;
+        xrc_log(@"[net:dl] done %@ → final=%@ status=%ld bytes=%lld err=%@",
+                task.originalRequest.URL.absoluteString, fin ?: @"(nil)", (long)r.statusCode,
                 (long long)task.countOfBytesReceived,
                 err ? [NSString stringWithFormat:@"%ld/%@", (long)err.code, err.localizedDescription]
                     : @"none");
@@ -374,8 +375,9 @@ static void s_dl_complete(id self_, SEL _cmd, NSURLSession *sess, NSURLSessionTa
 static void s_dl_finish(id self_, SEL _cmd, NSURLSession *sess, NSURLSessionDownloadTask *task, NSURL *loc) {
     @try {
         NSHTTPURLResponse *r = (NSHTTPURLResponse *)task.response;
-        xrc_log(@"[net:dl] file %@ status=%ld → %@",
-                task.originalRequest.URL.absoluteString, (long)r.statusCode, loc.path);
+        xrc_log(@"[net:dl] file %@ → final=%@ status=%ld saved=%@",
+                task.originalRequest.URL.absoluteString, r.URL.absoluteString ?: @"(nil)",
+                (long)r.statusCode, loc.path);
     } @catch (NSException *e) {}
     if (s_orig_dlfinish)
         ((void (*)(id, SEL, NSURLSession *, NSURLSessionDownloadTask *, NSURL *))s_orig_dlfinish)(self_, _cmd, sess, task, loc);
@@ -388,6 +390,24 @@ static id s_cfile(id self_, SEL _cmd, void *taskref) {
 static id s_cdata(id self_, SEL _cmd, void *taskref) {
     xrc_log(@"[net:dl] cocos createDataTask（下载入口命中）");
     return ((id (*)(id, SEL, void *))s_orig_cdata)(self_, _cmd, taskref);
+}
+
+// 下载链的 302：DownloaderAppleImpl **没有**实现 willPerformHTTPRedirection（IDB 实证），
+// 系统默认是"自动跟随"。这里补一个实现只为**看清链路**：打印跳转前后 URL，然后
+// 照默认语义 `handler(request)` 放行（未命中白名单时 s_rw_req 原样返回，零副作用）。
+static void s_dl_redirect(id self_, SEL _cmd, NSURLSession *sess, NSURLSessionTask *task,
+                          NSHTTPURLResponse *resp, NSURLRequest *newReq,
+                          void (^handler)(NSURLRequest *)) {
+    @try {
+        xrc_log(@"[net:dl] redirect %ld %@ → %@", (long)resp.statusCode,
+                task.originalRequest.URL.absoluteString, newReq.URL.absoluteString);
+    } @catch (NSException *e) {}
+    if (s_orig_dl_redirect) {
+        ((void (*)(id, SEL, NSURLSession *, NSURLSessionTask *, NSHTTPURLResponse *, NSURLRequest *,
+                   void (^)(NSURLRequest *)))s_orig_dl_redirect)(self_, _cmd, sess, task, resp, newReq, handler);
+    } else {
+        handler(s_rw_req(newReq));
+    }
 }
 
 static void s_install_download_stack(void) {
@@ -428,6 +448,8 @@ static void s_install_download_stack(void) {
             {"createDataTask:", "@24@0:8^v16", (IMP)s_cdata, &s_orig_cdata},
             {"URLSession:task:didCompleteWithError:", "v40@0:8@16@24@32", (IMP)s_dl_complete, &s_orig_dlcomplete},
             {"URLSession:downloadTask:didFinishDownloadingToURL:", "v40@0:8@16@24@32", (IMP)s_dl_finish, &s_orig_dlfinish},
+            {"URLSession:task:willPerformHTTPRedirection:newRequest:completionHandler:",
+             "v@:@@@@@?", (IMP)s_dl_redirect, &s_orig_dl_redirect},
         };
         int n = 0;
         for (unsigned i = 0; i < sizeof(t2) / sizeof(t2[0]); i++) {
@@ -441,7 +463,7 @@ static void s_install_download_stack(void) {
                 n++;
             }
         }
-        xrc_log(@"[net] download stack: DownloaderAppleImpl hooked %d/4", n);
+        xrc_log(@"[net] download stack: DownloaderAppleImpl hooked %d/5", n);
     } else {
         xrc_log(@"[net] download stack: DownloaderAppleImpl absent（下载不可见）");
     }
