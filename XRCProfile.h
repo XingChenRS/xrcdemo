@@ -289,6 +289,18 @@
 //   入口直返 0（未锁）；开关 = unlock_all。入口指令 SUB SP,#0xC0，重放安全。
 #define XRC_BRK_FV_GATE_SITE_OFF        (0x99156CULL)
 #define XRC_BRK_FV_GATE_REPLAY_OFF      (0x1468110ULL)
+// v2.10 链进度覆盖（2026-09-19，取证 research/notes/xrc-chain-regression-6.13-vs-7.0-2026-09-19.md）：
+//   7.0 **新增**了整套「链」系统：InitFunc_194 建 rank→曲名表（finale 五曲 / konzetsu 五曲+arghena），
+//   运行时把**硬编码名**拼成 "<名>|<难度>" 去 mgr+0x28 容器查节点对象；而对象是按 songlist 的
+//   **id 字段**注册的（解析器 sub_100C7BAE0 @0x100C7E470 同一键式）→ 曲目 id 被改名（或 set 被挪，
+//   注册不发生）时对不上 → sub_1001811C4 返回 NULL → sub_10098FB1C 不判空 → 读 [NULL+0x28] 崩
+//   （实测崩溃链 sub_100CA118C → sub_10018A3A8 → sub_10098F5BC → sub_10098FB1C）。
+//   6.13 无此系统（balor/cataclysmcry/konzetsu 字面量全无）→ 该崩因是 7.0 回归。
+//   入口直返 100（= 该函数自身"无场景对象"路径的合法进度值）→ 不再查表（改名/挪包均安全），
+//   并令 sub_10099156C 的 v19=(98FB1C==0) 恒 0 = 可玩。开关复用 unlock_all。
+//   入口指令 SUB SP,#0xB0（重放安全）；配对标记 "chain-guard v1"。
+#define XRC_BRK_CHAIN_PROG_SITE_OFF     (0x98FB1CULL)
+#define XRC_BRK_CHAIN_PROG_REPLAY_OFF   (0x1468118ULL)
 // 自动演奏站点处理器引用的 7.0 布局常量（出处同上：D9A0/CBB0 反汇编 + vtable 符号表）。
 #define XRC_NOTE_TIME_END_OFF       28            // note+0x1C = 窗口时刻（判定 pass 两处 CMP 的依据；
                                                   // 注：旧记录"note+28=判定类型"来自别的对象，已修正）

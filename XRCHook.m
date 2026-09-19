@@ -228,6 +228,23 @@ static void s_finale_gate_open(void *vctx) {
     atomic_fetch_add(&s_lock_hits, 1);
 }
 
+// 链进度覆盖（v2.10）：sub_10098FB1C 是 7.0 新增「链」系统的查表点——把硬编码曲名
+// （InitFunc_194 表：finale 五曲 / konzetsu 五曲+arghena）拼成 "<名>|<难度>" 去 mgr+0x28
+// 容器查节点对象，而对象按 songlist 的 **id** 注册 → id 改名或 set 挪位时查不到 → 该函数
+// 不判空直接读 [NULL+0x28]（实测崩溃链 CA118C → 18A3A8 → 98F5BC → 98FB1C）。
+// 入口直返 100（其自身"无场景对象"路径的合法进度值）→ 不再查表（改名/挪包安全），
+// 且让 sub_10099156C 的 v19=(98FB1C==0) 恒为 0 = 可玩。开关复用 unlock_all。
+static void s_chain_prog_neutral(void *vctx) {
+    if (!atomic_load(&s_unlock_all)) return;
+    ucontext_t *uc = (ucontext_t *)vctx;
+    if (!uc || !uc->uc_mcontext) return;
+    __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
+    ss->__x[0] = 100;                          // 0..100 进度语义；100 = 无进度/无对象
+    __darwin_arm_thread_state64_set_pc_fptr(*ss,
+        (void *)__darwin_arm_thread_state64_get_lr(*ss));
+    atomic_fetch_add(&s_lock_hits, 1);
+}
+
 // ---------------- 登录门守卫开关（功能账 §1.4；no-replay 变体，2026-09-18）----------------
 // 14 个站点均为 CBZ/TBZ（PC 相对指令）→ **不可重放**；处理器按 W0 自判分支走向：
 // 命中时 W0 = 紧邻的 BL checkA/checkB 返回值（14/14 逐站点核实）。永不使用 replay 槽。
@@ -534,6 +551,7 @@ static const xrc_brk_entry_t k_brk_entries[] = {
     { "lock_fv",          XRC_BRK_LOCK_FV_SITE_OFF,         XRC_BRK_LOCK_FV_REPLAY_OFF,         s_lock_all },
     { "lock_do",          XRC_BRK_LOCK_DO_SITE_OFF,         XRC_BRK_LOCK_DO_REPLAY_OFF,         s_lock_all },
     { "fv_gate",          XRC_BRK_FV_GATE_SITE_OFF,         XRC_BRK_FV_GATE_REPLAY_OFF,         s_finale_gate_open },
+    { "chain_prog",       XRC_BRK_CHAIN_PROG_SITE_OFF,      XRC_BRK_CHAIN_PROG_REPLAY_OFF,      s_chain_prog_neutral },
 };
 
 static void s_sigtrap(int sig, siginfo_t *info, void *vctx) {
@@ -658,7 +676,12 @@ void xrc_brk_setup(uint64_t image_base) {
     xrc_log(@"[brk] login-guard v1 ready (login_open=%d, slots=%d)",
             (int)atomic_load(&s_login_open), atomic_load(&s_count));
     // 同款配对标记：自动演奏站点（ap_*）由本 dylib 处理；旧 dylib 无此表 → 注入脚本拒配。
-    xrc_log(@"[brk] autoplay-eve v1 ready (v2.9 mark=arc-consume/hold-held + lock/finale-gate; autoplay=%d)", (int)xrc_judge_autoplay());
+    xrc_log(@"[brk] autoplay-eve v1 ready (v2.10 mark=arc-consume/hold-held + lock/finale-gate + chain-guard; autoplay=%d)", (int)xrc_judge_autoplay());
+    // 配对标记：链进度覆盖桩（chain_prog，7.0 新增「链」系统的查表点）由本 dylib 处理。
+    // 旧 dylib 无此站点处理器 → BRK 命中后会落默认处理器（重放原指令）→ 崩因依旧，
+    // 故注入脚本先核对本标记串，缺失即拒配。
+    xrc_log(@"[brk] chain-guard v1 ready (chain_prog -> 100; unlock_all=%d)",
+            (int)atomic_load(&s_unlock_all));
     xrc_brk_capture_enable(true);
 }
 

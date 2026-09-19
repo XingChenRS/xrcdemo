@@ -122,6 +122,11 @@ BRK_HOOKS = [
     # v2.7 终章链门（FV 五曲"锁标 + 开局门"的共同上游：锁态 sub_100991508 与可玩性谓词
     #   sub_100919874 都调它）→ 入口直返 0（未锁）；开关 unlock_all，关时重放。
     ("fv_gate",          0x10099156C, 0x101468110, "ff0303d1"),  # SUB SP,#0xC0（终章链门入口）
+    # v2.10 链进度覆盖（7.0 新增「链」系统的查表点；取证 xrc-chain-regression-6.13-vs-7.0-2026-09-19.md）：
+    #   sub_10098FB1C 把硬编码曲名（InitFunc_194 表）拼 "<名>|<难度>" 查节点对象；对象按 songlist 的
+    #   id 注册 → 改名/挪包即 NULL → 不判空 → 读 [NULL+0x28] 崩。入口直返 100（无对象进度值）。
+    #   开关 unlock_all；dylib 侧配对标记 "chain-guard v1"。
+    ("chain_prog",       0x10098FB1C, 0x101468118, "ffc302d1"),  # SUB SP,#0xB0（链进度 sub_10098FB1C 入口）
 ]
 
 # ---- 门禁静态补丁（形态 0；7.0.255 重定位 2026-09-18，注入即生效，可 --no-gates 关闭）----
@@ -666,6 +671,15 @@ def main():
             print("[!] dylibs lack 'autoplay-eve v1' support —")
             print("    ap_* BRK sites would fall through to the fallback table on first hit")
             print("    and chain to Swift/Crashlytics trap handlers. Refusing to mix.")
+            sys.exit(3)
+
+    # 同款配对校验：链进度桩（chain_prog，7.0「链」系统查表点）需要 dylib 侧处理器。
+    if any(n == "chain_prog" for n, _s, _r, _e in BRK_HOOKS):
+        marker = b"chain-guard v1"
+        if not any(marker in open(d, "rb").read() for d in dylibs):
+            print("[!] dylibs lack 'chain-guard v1' support —")
+            print("    chain_prog BRK would replay the original lookup → NULL deref crash")
+            print("    for renamed ids / moved packs. Refusing to mix.")
             sys.exit(3)
 
     os.makedirs(FW_DIR, exist_ok=True)
