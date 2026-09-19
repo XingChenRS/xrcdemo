@@ -214,7 +214,7 @@ static void s_lock_all(void *vctx) {
 // sub_100991508 与可玩性谓词 sub_100919874（选曲 cell / Play 门）都调它；终章链未推进时
 // 返回 1=锁 → 既显示锁标也挡住 start（DO 之所以能 start：其链字节放行 FTR/INS）。
 // 入口直返 0（未锁）；开关复用 unlock_all，关时重放原指令走原路径。
-// 终章链门覆盖（v2.7 BRK 版 + v2.8 sighook 版）：
+// 终章链门覆盖（v2.7 BRK 版；v2.8 曾试 MSHookFunction sighook——实机挂死，已撤回为纯 BRK）：
 // sub_10099156C 是 FV 五曲"锁标 + 开局门"的共同上游（锁态 sub_100991508 与可玩性谓词
 // sub_100919874 都调它）。入口直返 0（未锁）；开关复用 unlock_all。
 static void s_finale_gate_open(void *vctx) {
