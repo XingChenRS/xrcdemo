@@ -217,12 +217,20 @@ static void s_lock_all(void *vctx) {
 // 终章链门覆盖（v2.7 BRK 版；v2.8 曾试 MSHookFunction sighook——实机挂死，已撤回为纯 BRK）：
 // sub_10099156C 是 FV 五曲"锁标 + 开局门"的共同上游（锁态 sub_100991508 与可玩性谓词
 // sub_100919874 都调它）。入口直返 0（未锁）；开关复用 unlock_all。
+// 终章链门覆盖（v2.7 建，v2.11 修正极性）：`sub_10099156C` 返回值语义经两处消费点钉死——
+//   ① `sub_100919874`（可玩性谓词）直返它的值，消费点（sub_1008660F8 `CBNZ W0` → 选中该难度）
+//      证明 **1 = 放行/可玩、0 = 锁**；
+//   ② `sub_100991508`（FV fast path）里 `if (56C & 1) → 返回 0 = 全 0 字节（全锁）`，
+//      与 ① 的编码方向一致（字节 1 = 解锁，见 sub_1008660F8 的 bics/tbz 判据）。
+//   ⇒ 覆盖必须返回 **1**（放行）。v2.7-v2.10 一直返 0（那时设备二进制没有该站点，未暴露）；
+//      v2.10 首次真正生效即把**所有曲**钉成锁 → 全线锁死（2026-09-19 实机复现 + 日志 fv_gate 命中增长）。
+//   入口直返 1；开关复用 unlock_all。
 static void s_finale_gate_open(void *vctx) {
     if (!atomic_load(&s_unlock_all)) return;
     ucontext_t *uc = (ucontext_t *)vctx;
     if (!uc || !uc->uc_mcontext) return;
     __typeof__(uc->uc_mcontext->__ss) *ss = &uc->uc_mcontext->__ss;
-    ss->__x[0] = 0;
+    ss->__x[0] = 1;                            // 放行（1 = 可玩；0 = 锁——勿再弄反）
     __darwin_arm_thread_state64_set_pc_fptr(*ss,
         (void *)__darwin_arm_thread_state64_get_lr(*ss));
     atomic_fetch_add(&s_lock_hits, 1);
@@ -676,7 +684,7 @@ void xrc_brk_setup(uint64_t image_base) {
     xrc_log(@"[brk] login-guard v1 ready (login_open=%d, slots=%d)",
             (int)atomic_load(&s_login_open), atomic_load(&s_count));
     // 同款配对标记：自动演奏站点（ap_*）由本 dylib 处理；旧 dylib 无此表 → 注入脚本拒配。
-    xrc_log(@"[brk] autoplay-eve v1 ready (v2.10 mark=arc-consume/hold-held + lock/finale-gate + chain-guard; autoplay=%d)", (int)xrc_judge_autoplay());
+    xrc_log(@"[brk] autoplay-eve v1 ready (v2.11 mark=arc-consume/hold-held + lock/finale-gate(1=放行) + chain-guard; autoplay=%d)", (int)xrc_judge_autoplay());
     // 配对标记：链进度覆盖桩（chain_prog，7.0 新增「链」系统的查表点）由本 dylib 处理。
     // 旧 dylib 无此站点处理器 → BRK 命中后会落默认处理器（重放原指令）→ 崩因依旧，
     // 故注入脚本先核对本标记串，缺失即拒配。
