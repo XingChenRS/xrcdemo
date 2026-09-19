@@ -597,7 +597,9 @@ void xrc_brk_setup(uint64_t image_base) {
                 e->name, ok, (void *)site, insn, patched, (void *)replay);
     }
     // 配对标记 ①：自动演奏站点（ap_*）由本 dylib 处理；旧 dylib 无此表 → 注入脚本拒配。
-    xrc_log(@"[brk] autoplay-eve v1 ready (v2.12 mark=arc-consume/hold-held + lock/finale-gate(1=放行) + chain-guard; autoplay=%d)", (int)xrc_judge_autoplay());
+    // ⚠ **必须纯 ASCII**：inject.py 按 UTF-8 原字节搜标记串；而含非 ASCII 的 @"..." 会被
+    // clang 编成 UTF-16（CFString），字节层面搜不到 → 假阴性拒配（2026-09-19 踩过）。
+    xrc_log(@"[brk] autoplay-eve v1 ready (v2.12 mark=arc-consume/hold-held, finale-gate=1 allow, chain-guard; autoplay=%d)", (int)xrc_judge_autoplay());
     // 配对标记 ②：链进度覆盖桩（chain_prog，7.0 新增「链」系统的查表点）由本 dylib 处理；
     // 旧 dylib 命中该站点会重放原指令 → 崩因依旧，注入脚本据此拒配。此桩**不设开关、恒生效**。
     xrc_log(@"[brk] chain-guard v1 ready (chain_prog -> 100, always-on)");
