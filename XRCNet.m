@@ -185,6 +185,10 @@ static id s_init_with_request(id self, SEL _cmd, NSURLRequest *req, id delegate,
 // 目的：区分"请求没发出去"（ATS/连接层拦截）与"发出去了但服务端没响应"。
 static IMP s_orig_fail = NULL;
 static IMP s_orig_resp = NULL;
+static IMP s_orig_data = NULL;    // -[HttpAsynConnection connection:didReceiveData:]
+static IMP s_orig_dt = NULL;      // -[NSURLSession dataTaskWithRequest:]
+static IMP s_orig_dtu = NULL;     // -[NSURLSession dataTaskWithURL:]
+static IMP s_orig_async = NULL;   // +[NSURLConnection sendAsynchronousRequest:queue:completionHandler:]
 static _Atomic(bool) s_diag_done_on_fail = false;
 
 static void s_hook_fail(id self_, SEL _cmd, NSURLConnection *c, NSError *err) {
@@ -217,6 +221,71 @@ static void s_hook_resp(id self_, SEL _cmd, NSURLConnection *c, NSURLResponse *r
     if (s_orig_resp) ((void (*)(id, SEL, NSURLConnection *, NSURLResponse *))s_orig_resp)(self_, _cmd, c, r);
 }
 
+// ---- 响应体转储（v2.13）：只看清单/下载类路径，最多 3000 B，只记首个数据块 ----
+// 目的：回答"对方服务器 ?url=true 的清单里到底有没有文件 URL"——客户端不发起下载时，
+// 这是唯一能从设备侧看到的证据。
+static void s_hook_data(id self_, SEL _cmd, NSURLConnection *c, NSData *data) {
+    @try {
+        static NSString *s_lastPath = nil;
+        NSString *path = c.originalRequest.URL.path ?: @"";
+        if (data.length && ![path isEqualToString:s_lastPath]) {
+            if ([path containsString:@"serve/download"] || [path containsString:@"/download/"]) {
+                s_lastPath = [path copy];
+                NSUInteger n = MIN(data.length, (NSUInteger)3000);
+                NSString *body = [[NSString alloc] initWithData:[data subdataWithRange:NSMakeRange(0, n)]
+                                                       encoding:NSUTF8StringEncoding];
+                if (!body) body = [[NSString alloc] initWithData:[data subdataWithRange:NSMakeRange(0, n)]
+                                                        encoding:NSISOLatin1StringEncoding];
+                xrc_log(@"[net-body] %@ (%lu B 中的前 %lu B): %@",
+                        path, (unsigned long)data.length, (unsigned long)n, body ?: @"<binary>");
+            }
+        }
+    } @catch (NSException *e) {}
+    if (s_orig_data) ((void (*)(id, SEL, NSURLConnection *, NSData *))s_orig_data)(self_, _cmd, c, data);
+}
+
+// ---- 另两条 HTTP 栈的探针（v2.13）----
+// 事实：清单请求走 NSURLConnection（有 [net] 日志），但**下载文件时一个请求都没有**——
+// 要么客户端根本没发起下载，要么发起时走的是别条栈（NSURLSession / 异步连接）。
+// 这里把这两条也记上：命中即证明"下载走的是它"，也顺手做同样的白名单改写。
+static void s_log_any_url(NSURLRequest *req, const char *tag) {
+    @try {
+        if (!req.URL) return;
+        NSString *h = req.URL.host ?: @"";
+        // 过滤遥测/第三方栈（Firebase/Crashlytics/Google 走的就是 NSURLSession，避免刷屏）
+        if ([h containsString:@"googleapis"] || [h containsString:@"firebase"] ||
+            [h containsString:@"crashlytics"] || [h containsString:@"gstatic"] ||
+            [h containsString:@"doubleclick"]) return;
+        xrc_log(@"[net:%s] %@ %@", tag, req.HTTPMethod ?: @"GET", req.URL.absoluteString);
+    } @catch (NSException *e) {}
+}
+
+static id s_nsurlsession_task(id self_, SEL _cmd, NSURLRequest *req) {
+    if (req && atomic_load(&s_enabled)) {
+        NSURL *nu = s_rewrite(req.URL);
+        if (nu) {
+            NSMutableURLRequest *m = [req mutableCopy];
+            m.URL = nu;
+            s_log_any_url(m, "session");
+            @try {
+                return ((id (*)(id, SEL, NSURLRequest *))s_orig_dt)(self_, _cmd, m);
+            } @catch (NSException *e) {}
+        }
+    }
+    s_log_any_url(req, "session");
+    return ((id (*)(id, SEL, NSURLRequest *))s_orig_dt)(self_, _cmd, req);
+}
+
+static id s_nsurlsession_task_url(id self_, SEL _cmd, NSURL *url) {
+    s_log_any_url([NSURLRequest requestWithURL:url], "session");
+    return ((id (*)(id, SEL, NSURL *))s_orig_dtu)(self_, _cmd, url);
+}
+
+static void s_nsurlconnection_async(id self_, SEL _cmd, NSURLRequest *req, NSOperationQueue *q, id h) {
+    s_log_any_url(req, "async");
+    if (s_orig_async) ((void (*)(id, SEL, NSURLRequest *, NSOperationQueue *, id))s_orig_async)(self_, _cmd, req, q, h);
+}
+
 static void s_swizzle_result_logging(void) {
     Class hc = objc_getClass("HttpAsynConnection");
     if (!hc) { xrc_log(@"[net] HttpAsynConnection absent (result logging off)"); return; }
@@ -232,6 +301,30 @@ static void s_swizzle_result_logging(void) {
     if (mr) {
         s_orig_resp = method_getImplementation(mr);
         method_setImplementation(mr, (IMP)s_hook_resp);
+    }
+    Method md = class_getInstanceMethod(hc, @selector(connection:didReceiveData:));
+    if (md) {
+        s_orig_data = method_getImplementation(md);
+        method_setImplementation(md, (IMP)s_hook_data);
+        xrc_log(@"[net] body dump: didReceiveData hooked");
+    }
+}
+
+// v2.13：另两条栈的探针（NSURLSession 的两种 task + 异步连接）
+static void s_install_other_stacks(void) {
+    Class scls = objc_getClass("NSURLSession");
+    if (scls) {
+        Method m1 = class_getInstanceMethod(scls, @selector(dataTaskWithRequest:));
+        if (m1) { s_orig_dt = method_getImplementation(m1); method_setImplementation(m1, (IMP)s_nsurlsession_task); }
+        Method m2 = class_getInstanceMethod(scls, @selector(dataTaskWithURL:));
+        if (m2) { s_orig_dtu = method_getImplementation(m2); method_setImplementation(m2, (IMP)s_nsurlsession_task_url); }
+        xrc_log(@"[net] NSURLSession probes: dt=%d dtu=%d", s_orig_dt != NULL, s_orig_dtu != NULL);
+    }
+    Class ncls = objc_getClass("NSURLConnection");
+    if (ncls) {
+        Method m3 = class_getClassMethod(ncls, @selector(sendAsynchronousRequest:queue:completionHandler:));
+        if (m3) { s_orig_async = method_getImplementation(m3); method_setImplementation(m3, (IMP)s_nsurlconnection_async); }
+        xrc_log(@"[net] async connection probe=%d", s_orig_async != NULL);
     }
 }
 
@@ -259,9 +352,11 @@ static NSURLRequest *s_will_send(id self_, SEL _cmd, NSURLConnection *c,
                         req.URL.path, req.URL.host, nu.host);
                 return m;
             }
-            if (req.URL.host) {
-                xrc_log(@"[net] 302 → %@ host=%@ **不在改写名单**（如需劫持请加入 netMatch）",
-                        req.URL.path, req.URL.host);
+            NSString *origHost = c.originalRequest.URL.host;
+            if (req.URL.host && ![req.URL.host isEqualToString:origHost ?: @""]) {
+                // 跨主机跳转才提示（同主机跳转是常态，不值得刷屏）
+                xrc_log(@"[net] 302 → %@ host=%@ (orig=%@, 未改写)",
+                        req.URL.path, req.URL.host, origHost ?: @"-");
             }
         }
     } @catch (NSException *e) {
@@ -296,5 +391,6 @@ void xrc_net_install(void) {
         xrc_log(@"[net] installed (match=%@)", [s_match componentsJoinedByString:@","]);
         s_swizzle_result_logging();
         s_install_redirect_hook();
+        s_install_other_stacks();
     });
 }
