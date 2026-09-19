@@ -27,3 +27,5 @@ bool   xrc_net_enabled(void);
 unsigned long long xrc_net_requests(void);
 unsigned long long xrc_net_rewritten(void);
 uint32_t xrc_net_redirects(void);   // 被改写的 302 跟跳次数（v2.12）
+uint32_t xrc_net_dl_created(void);  // cocos 下载栈：建任务次数（v2.14）
+uint32_t xrc_net_dl_done(void);     // cocos 下载栈：完结次数（v2.14）

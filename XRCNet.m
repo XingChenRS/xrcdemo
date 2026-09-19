@@ -286,6 +286,167 @@ static void s_nsurlconnection_async(id self_, SEL _cmd, NSURLRequest *req, NSOpe
     if (s_orig_async) ((void (*)(id, SEL, NSURLRequest *, NSOperationQueue *, id))s_orig_async)(self_, _cmd, req, q, h);
 }
 
+// ---------------- cocos2d-x 下载栈（v2.14）----------------
+// 事实（IDB 实证 2026-09-19）：
+//   · 游戏内"下载曲目"不走 NSURLConnection；走 cocos2d-x 的 Downloader：
+//     -[DownloaderAppleImpl createFileTask:]/[createDataTask:] → NSURLSession 任务。
+//   · v2.13 只挂了 NSURLSession 的 dataTask*，实测命中 0 → 下载全程不可见。
+//   · DownloaderAppleImpl 的 18 个方法里**没有** willPerformHTTPRedirection
+//     ⇒ 下载的 302 由系统默认跟随（不是被委托拦下的）。
+// 本版只加观测：建任务（含 URL）/ 启动 / 完结（状态码 + 错误）；不改行为（白名单改写除外）。
+static _Atomic(uint32_t) s_dl_created = 0;
+static _Atomic(uint32_t) s_dl_done = 0;
+uint32_t xrc_net_dl_created(void) { return atomic_load(&s_dl_created); }
+uint32_t xrc_net_dl_done(void) { return atomic_load(&s_dl_done); }
+
+static IMP s_orig_dlreq = NULL, s_orig_dlreqc = NULL, s_orig_dlurl = NULL, s_orig_dlurlc = NULL,
+           s_orig_dlresume = NULL, s_orig_dtcreq = NULL, s_orig_dtcurl = NULL,
+           s_orig_resume = NULL, s_orig_dlcomplete = NULL, s_orig_dlfinish = NULL,
+           s_orig_cfile = NULL, s_orig_cdata = NULL;
+
+// 下载请求也过一遍白名单改写（与 API 请求同源规则；未命中原样返回）
+static NSURLRequest *s_rw_req(NSURLRequest *req) {
+    if (!req || !atomic_load(&s_enabled)) return req;
+    NSURL *nu = s_rewrite(req.URL);
+    if (!nu) return req;
+    NSMutableURLRequest *m = [req mutableCopy];
+    m.URL = nu;
+    xrc_log(@"[net:dl] rewritten → %@", nu.absoluteString);
+    return m;
+}
+
+static id s_dl_req(id self_, SEL _cmd, NSURLRequest *req) {
+    atomic_fetch_add(&s_dl_created, 1);
+    NSURLRequest *r = s_rw_req(req);
+    s_log_any_url(r, "dl");
+    return ((id (*)(id, SEL, NSURLRequest *))s_orig_dlreq)(self_, _cmd, r);
+}
+static id s_dl_req_c(id self_, SEL _cmd, NSURLRequest *req, id h) {
+    atomic_fetch_add(&s_dl_created, 1);
+    NSURLRequest *r = s_rw_req(req);
+    s_log_any_url(r, "dl");
+    return ((id (*)(id, SEL, NSURLRequest *, id))s_orig_dlreqc)(self_, _cmd, r, h);
+}
+static id s_dl_url(id self_, SEL _cmd, NSURL *url) {
+    atomic_fetch_add(&s_dl_created, 1);
+    s_log_any_url([NSURLRequest requestWithURL:url], "dl");
+    return ((id (*)(id, SEL, NSURL *))s_orig_dlurl)(self_, _cmd, url);
+}
+static id s_dl_url_c(id self_, SEL _cmd, NSURL *url, id h) {
+    atomic_fetch_add(&s_dl_created, 1);
+    s_log_any_url([NSURLRequest requestWithURL:url], "dl");
+    return ((id (*)(id, SEL, NSURL *, id))s_orig_dlurlc)(self_, _cmd, url, h);
+}
+static id s_dl_resume(id self_, SEL _cmd, NSData *d) {
+    atomic_fetch_add(&s_dl_created, 1);
+    xrc_log(@"[net:dl] downloadTaskWithResumeData (%lu B)", (unsigned long)d.length);
+    return ((id (*)(id, SEL, NSData *))s_orig_dlresume)(self_, _cmd, d);
+}
+static id s_dt_req_c(id self_, SEL _cmd, NSURLRequest *req, id h) {
+    NSURLRequest *r = s_rw_req(req);
+    s_log_any_url(r, "dl");
+    return ((id (*)(id, SEL, NSURLRequest *, id))s_orig_dtcreq)(self_, _cmd, r, h);
+}
+static id s_dt_url_c(id self_, SEL _cmd, NSURL *url, id h) {
+    s_log_any_url([NSURLRequest requestWithURL:url], "dl");
+    return ((id (*)(id, SEL, NSURL *, id))s_orig_dtcurl)(self_, _cmd, url, h);
+}
+static void s_task_resume(id self_, SEL _cmd) {
+    @try {
+        if ([self_ isKindOfClass:[NSURLSessionTask class]])
+            s_log_any_url([(NSURLSessionTask *)self_ originalRequest], "task");
+    } @catch (NSException *e) {}
+    if (s_orig_resume) ((void (*)(id, SEL))s_orig_resume)(self_, _cmd);
+}
+static void s_dl_complete(id self_, SEL _cmd, NSURLSession *sess, NSURLSessionTask *task, NSError *err) {
+    atomic_fetch_add(&s_dl_done, 1);
+    @try {
+        NSHTTPURLResponse *r = (NSHTTPURLResponse *)task.response;
+        xrc_log(@"[net:dl] done %@ status=%ld bytes=%lld err=%@",
+                task.originalRequest.URL.absoluteString, (long)r.statusCode,
+                (long long)task.countOfBytesReceived,
+                err ? [NSString stringWithFormat:@"%ld/%@", (long)err.code, err.localizedDescription]
+                    : @"none");
+    } @catch (NSException *e) {}
+    if (s_orig_dlcomplete)
+        ((void (*)(id, SEL, NSURLSession *, NSURLSessionTask *, NSError *))s_orig_dlcomplete)(self_, _cmd, sess, task, err);
+}
+static void s_dl_finish(id self_, SEL _cmd, NSURLSession *sess, NSURLSessionDownloadTask *task, NSURL *loc) {
+    @try {
+        NSHTTPURLResponse *r = (NSHTTPURLResponse *)task.response;
+        xrc_log(@"[net:dl] file %@ status=%ld → %@",
+                task.originalRequest.URL.absoluteString, (long)r.statusCode, loc.path);
+    } @catch (NSException *e) {}
+    if (s_orig_dlfinish)
+        ((void (*)(id, SEL, NSURLSession *, NSURLSessionDownloadTask *, NSURL *))s_orig_dlfinish)(self_, _cmd, sess, task, loc);
+}
+static id s_cfile(id self_, SEL _cmd, void *taskref) {
+    atomic_fetch_add(&s_dl_created, 1);
+    xrc_log(@"[net:dl] cocos createFileTask（下载入口命中）");
+    return ((id (*)(id, SEL, void *))s_orig_cfile)(self_, _cmd, taskref);
+}
+static id s_cdata(id self_, SEL _cmd, void *taskref) {
+    xrc_log(@"[net:dl] cocos createDataTask（下载入口命中）");
+    return ((id (*)(id, SEL, void *))s_orig_cdata)(self_, _cmd, taskref);
+}
+
+static void s_install_download_stack(void) {
+    Class sc = objc_getClass("NSURLSession");
+    if (sc) {
+        struct { const char *sel; IMP imp; IMP *slot; } t[] = {
+            {"downloadTaskWithRequest:",                    (IMP)s_dl_req,      &s_orig_dlreq},
+            {"downloadTaskWithRequest:completionHandler:",  (IMP)s_dl_req_c,    &s_orig_dlreqc},
+            {"downloadTaskWithURL:",                        (IMP)s_dl_url,      &s_orig_dlurl},
+            {"downloadTaskWithURL:completionHandler:",      (IMP)s_dl_url_c,    &s_orig_dlurlc},
+            {"downloadTaskWithResumeData:",                 (IMP)s_dl_resume,   &s_orig_dlresume},
+            {"dataTaskWithRequest:completionHandler:",      (IMP)s_dt_req_c,    &s_orig_dtcreq},
+            {"dataTaskWithURL:completionHandler:",          (IMP)s_dt_url_c,    &s_orig_dtcurl},
+        };
+        int n = 0;
+        for (unsigned i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+            Method m = class_getInstanceMethod(sc, sel_registerName(t[i].sel));
+            if (!m) continue;
+            *t[i].slot = method_getImplementation(m);
+            method_setImplementation(m, t[i].imp);
+            n++;
+        }
+        xrc_log(@"[net] download stack: NSURLSession factories hooked %d/7", n);
+    }
+    Class tk = objc_getClass("NSURLSessionTask");
+    if (tk) {
+        Method m = class_getInstanceMethod(tk, @selector(resume));
+        if (m) {
+            s_orig_resume = method_getImplementation(m);
+            method_setImplementation(m, (IMP)s_task_resume);
+        }
+        xrc_log(@"[net] download stack: task-resume hook=%d", s_orig_resume != NULL);
+    }
+    Class dl = objc_getClass("DownloaderAppleImpl");
+    if (dl) {
+        struct { const char *sel; const char *enc; IMP imp; IMP *slot; } t2[] = {
+            {"createFileTask:", "@24@0:8^v16", (IMP)s_cfile, &s_orig_cfile},
+            {"createDataTask:", "@24@0:8^v16", (IMP)s_cdata, &s_orig_cdata},
+            {"URLSession:task:didCompleteWithError:", "v40@0:8@16@24@32", (IMP)s_dl_complete, &s_orig_dlcomplete},
+            {"URLSession:downloadTask:didFinishDownloadingToURL:", "v40@0:8@16@24@32", (IMP)s_dl_finish, &s_orig_dlfinish},
+        };
+        int n = 0;
+        for (unsigned i = 0; i < sizeof(t2) / sizeof(t2[0]); i++) {
+            SEL s = sel_registerName(t2[i].sel);
+            Method m = class_getInstanceMethod(dl, s);
+            if (m && method_getImplementation(m) != t2[i].imp) {
+                *t2[i].slot = method_getImplementation(m);
+                method_setImplementation(m, t2[i].imp);
+                n++;
+            } else if (!m && class_addMethod(dl, s, t2[i].imp, t2[i].enc)) {
+                n++;
+            }
+        }
+        xrc_log(@"[net] download stack: DownloaderAppleImpl hooked %d/4", n);
+    } else {
+        xrc_log(@"[net] download stack: DownloaderAppleImpl absent（下载不可见）");
+    }
+}
+
 static void s_swizzle_result_logging(void) {
     Class hc = objc_getClass("HttpAsynConnection");
     if (!hc) { xrc_log(@"[net] HttpAsynConnection absent (result logging off)"); return; }
@@ -392,5 +553,6 @@ void xrc_net_install(void) {
         s_swizzle_result_logging();
         s_install_redirect_hook();
         s_install_other_stacks();
+        s_install_download_stack();
     });
 }
